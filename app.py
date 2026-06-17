@@ -579,6 +579,9 @@ class Handler(BaseHTTPRequestHandler):
         return
 
 
+handler = Handler
+
+
 def main() -> None:
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Åpne http://{HOST}:{PORT}")
