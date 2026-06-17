@@ -1,19 +1,26 @@
 from __future__ import annotations
 
+import cgi
 import json
+import os
 import struct
+import shutil
+import tempfile
 import unicodedata
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from generate_dataease_dbm import generate as generate_dbm
+from generate_dataease_dbm import parse_csv
+
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / "CUSTOMERS.DBM"
 PRODUCT_FILE = BASE_DIR / "PRODUKTER.DBM"
 HOST = "127.0.0.1"
-PORT = 8000
+PORT = int(os.environ.get("PORT", "8000"))
 
 
 @dataclass(frozen=True)
@@ -191,6 +198,62 @@ def list_products() -> list[dict]:
     return [_product_payload(row) for row in read_dataease_records(PRODUCT_FILE)]
 
 
+def convert_csv(csv_path: str, table_name: str, output_dir: str) -> dict:
+    source = Path(csv_path).expanduser()
+    target_dir = Path(output_dir).expanduser() if output_dir else BASE_DIR
+
+    if not source.is_absolute():
+        source = BASE_DIR / source
+    if not target_dir.is_absolute():
+        target_dir = BASE_DIR / target_dir
+
+    if not source.exists():
+        raise ValueError(f"CSV-filen finnes ikke: {source}")
+    if not source.is_file():
+        raise ValueError(f"CSV-stien peker ikke på en fil: {source}")
+
+    table, field_defs, records = parse_csv(source, table_name.strip() or None)
+    dbm_path, tdf_path = generate_dbm(table, field_defs, records, target_dir)
+
+    return {
+        "table": table,
+        "fields": len(field_defs),
+        "records": len(records),
+        "dbm": str(dbm_path),
+        "tdf": str(tdf_path),
+    }
+
+
+def convert_uploaded_csv(file_item, table_name: str, output_dir: str) -> dict:
+    filename = Path(file_item.filename or "").name
+    if not filename:
+        raise ValueError("Velg en CSV-fil først.")
+
+    target_dir = Path(output_dir).expanduser() if output_dir else BASE_DIR
+    if not target_dir.is_absolute():
+        target_dir = BASE_DIR / target_dir
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
+        temp_path = Path(temp_file.name)
+        file_item.file.seek(0)
+        shutil.copyfileobj(file_item.file, temp_file)
+
+    try:
+        table, field_defs, records = parse_csv(temp_path, table_name.strip() or None)
+        dbm_path, tdf_path = generate_dbm(table, field_defs, records, target_dir)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+    return {
+        "table": table,
+        "fields": len(field_defs),
+        "records": len(records),
+        "dbm": str(dbm_path),
+        "tdf": str(tdf_path),
+        "source": filename,
+    }
+
+
 def json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict | list) -> None:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     handler.send_response(status)
@@ -316,7 +379,8 @@ HTML = """<!doctype html>
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(17, 106, 91, 0.14);
     }
-    .search button {
+    .search button,
+    .convert-form button {
       min-height: 52px;
       border: 0;
       border-radius: 8px;
@@ -327,7 +391,23 @@ HTML = """<!doctype html>
       font-weight: 700;
       cursor: pointer;
     }
-    .search button:hover { background: var(--accent-strong); }
+    .search button:hover,
+    .convert-form button:hover { background: var(--accent-strong); }
+    .convert-form {
+      display: grid;
+      gap: 14px;
+      max-width: 680px;
+      margin-bottom: 22px;
+    }
+    .field {
+      display: grid;
+      gap: 7px;
+    }
+    .field label {
+      color: var(--muted);
+      font-size: 0.9rem;
+      font-weight: 800;
+    }
     .view {
       display: none;
     }
@@ -438,6 +518,7 @@ HTML = """<!doctype html>
         <button class="menu-button" type="button" data-view="list-view">Liste over personer</button>
         <button class="menu-button" type="button" data-view="product-search-view">Produkt-Søk</button>
         <button class="menu-button" type="button" data-view="product-list-view">Liste over produkter</button>
+        <button class="menu-button" type="button" data-view="csv-convert-view">Konvertering av CSV</button>
       </nav>
     </aside>
     <main>
@@ -474,6 +555,27 @@ HTML = """<!doctype html>
         <div class="status" id="product-list-status"></div>
         <section id="product-list-results" aria-live="polite"></section>
       </section>
+      <section class="view" id="csv-convert-view">
+        <h1>Konvertering av CSV</h1>
+        <p class="lede">Lag en DataEase DBM-fil fra en CSV-fil og velg tabellnavnet som skal lagres i filen.</p>
+        <form class="convert-form" id="csv-convert-form">
+          <div class="field">
+            <label for="csv-file">CSV-fil</label>
+            <input id="csv-file" name="csv-file" type="file" accept=".csv,text/csv">
+          </div>
+          <div class="field">
+            <label for="csv-table">Tabellnavn</label>
+            <input id="csv-table" name="csv-table" placeholder="F.eks. KUNDER">
+          </div>
+          <div class="field">
+            <label for="csv-output">Output-mappe</label>
+            <input id="csv-output" name="csv-output" value=".">
+          </div>
+          <button type="submit">Konverter</button>
+        </form>
+        <div class="status" id="csv-convert-status"></div>
+        <section class="results" id="csv-convert-results" aria-live="polite"></section>
+      </section>
     </main>
   </div>
   <script>
@@ -491,6 +593,12 @@ HTML = """<!doctype html>
     const productResults = document.querySelector("#product-results");
     const productListStatus = document.querySelector("#product-list-status");
     const productListResults = document.querySelector("#product-list-results");
+    const csvConvertForm = document.querySelector("#csv-convert-form");
+    const csvFileInput = document.querySelector("#csv-file");
+    const csvTableInput = document.querySelector("#csv-table");
+    const csvOutputInput = document.querySelector("#csv-output");
+    const csvConvertStatus = document.querySelector("#csv-convert-status");
+    const csvConvertResults = document.querySelector("#csv-convert-results");
     let listLoaded = false;
     let productListLoaded = false;
 
@@ -618,6 +726,21 @@ HTML = """<!doctype html>
       `;
     }
 
+    function renderConversion(payload) {
+      csvConvertResults.innerHTML = `
+        <article class="person">
+          <h2>${escapeHtml(payload.table)}</h2>
+          <dl>
+            <dt>DBM-fil</dt><dd>${escapeHtml(payload.dbm)}</dd>
+            <dt>TDF-fil</dt><dd>${escapeHtml(payload.tdf)}</dd>
+            <dt>CSV-fil</dt><dd>${escapeHtml(payload.source || "-")}</dd>
+            <dt>Felter</dt><dd>${escapeHtml(payload.fields)}</dd>
+            <dt>Records</dt><dd>${escapeHtml(payload.records)}</dd>
+          </dl>
+        </article>
+      `;
+    }
+
     async function loadList() {
       if (listLoaded) return;
       listStatus.textContent = "Laster records...";
@@ -663,6 +786,7 @@ HTML = """<!doctype html>
         if (viewId === "search-view") input.focus();
         if (viewId === "product-list-view") loadProductList();
         if (viewId === "product-search-view") productInput.focus();
+        if (viewId === "csv-convert-view") csvFileInput.focus();
       });
     });
 
@@ -713,6 +837,41 @@ HTML = """<!doctype html>
         productResults.innerHTML = "";
       }
     });
+
+    csvConvertForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const csvFile = csvFileInput.files[0];
+      const tableName = csvTableInput.value.trim();
+      const outputDir = csvOutputInput.value.trim();
+
+      if (!csvFile) {
+        csvConvertStatus.textContent = "Velg en CSV-fil først.";
+        csvConvertResults.innerHTML = "";
+        return;
+      }
+
+      csvConvertStatus.textContent = "Konverterer...";
+      csvConvertResults.innerHTML = "";
+
+      try {
+        const formData = new FormData();
+        formData.append("csvFile", csvFile);
+        formData.append("tableName", tableName);
+        formData.append("outputDir", outputDir);
+
+        const response = await fetch("/api/convert-csv", {
+          method: "POST",
+          body: formData
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Konverteringen feilet.");
+        csvConvertStatus.textContent = "Konvertering fullført.";
+        renderConversion(payload);
+      } catch (error) {
+        csvConvertStatus.textContent = error.message;
+        csvConvertResults.innerHTML = "";
+      }
+    });
   </script>
 </body>
 </html>
@@ -759,6 +918,45 @@ class Handler(BaseHTTPRequestHandler):
                 json_response(self, 200, list_products())
             except Exception as exc:
                 json_response(self, 500, {"error": str(exc)})
+            return
+
+        json_response(self, 404, {"error": "Ikke funnet"})
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/convert-csv":
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+                content_type = self.headers.get("Content-Type", "")
+                if content_type.startswith("multipart/form-data"):
+                    form = cgi.FieldStorage(
+                        fp=self.rfile,
+                        headers=self.headers,
+                        environ={
+                            "REQUEST_METHOD": "POST",
+                            "CONTENT_TYPE": content_type,
+                            "CONTENT_LENGTH": str(content_length),
+                        },
+                    )
+                    file_item = form["csvFile"] if "csvFile" in form else None
+                    if file_item is None or not getattr(file_item, "file", None):
+                        raise ValueError("Velg en CSV-fil først.")
+                    result = convert_uploaded_csv(
+                        file_item,
+                        form.getfirst("tableName", ""),
+                        form.getfirst("outputDir", ""),
+                    )
+                else:
+                    raw_body = self.rfile.read(content_length)
+                    payload = json.loads(raw_body.decode("utf-8") or "{}")
+                    result = convert_csv(
+                        str(payload.get("csvPath", "")),
+                        str(payload.get("tableName", "")),
+                        str(payload.get("outputDir", "")),
+                    )
+                json_response(self, 200, result)
+            except Exception as exc:
+                json_response(self, 400, {"error": str(exc)})
             return
 
         json_response(self, 404, {"error": "Ikke funnet"})

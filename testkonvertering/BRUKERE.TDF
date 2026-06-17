@@ -1,0 +1,26 @@
+TABLE: BRUKERE
+VERSION: 6
+FIELDS: 8
+
+#    NAME                 TYPE             LEN  DEC FLAGS
+------------------------------------------------------------
+1    EXTERNALUSERID       Integer            4    0  -
+2    EMAIL                Text              15    0  -
+3    NAME                 Text              12    0  -
+4    ROLE                 Text               5    0  -
+5    ISACTIVE             Yes/No             1    0  -
+6    CREATEDAT            Text              24    0  -
+7    UPDATEDAT            Text              24    0  -
+8    ID                   Yes/No             1    0  -
+
+RECORD_SIZE:  87 bytes  (1 flag + 86 data)
+HEADER_SIZE:  642 bytes
+TOTAL_RECORDS: 1
+
+NOTES:
+  - Text fields: fixed-width, null-padded (0x00)
+  - Integer: 4-byte little-endian signed int32
+  - Date(Ext): 10-byte ASCII MM/DD/YYYY
+  - Record flag: 0x20=active, 0x2A=deleted
+  - File ends with EOF marker 0x1A
+  - Memo fields stored separately (not in .DBM)
