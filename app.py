@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / "CUSTOMERS.DBM"
+PRODUCT_FILE = BASE_DIR / "PRODUKTER.DBM"
 HOST = "127.0.0.1"
 PORT = 8000
 
@@ -143,6 +144,51 @@ def list_people() -> list[dict]:
             }
         )
     return people
+
+
+def _format_price(value) -> str:
+    try:
+        return f"{float(value):,.2f}".replace(",", " ")
+    except (TypeError, ValueError):
+        return str(value or "")
+
+
+def _product_payload(row: dict) -> dict:
+    return {
+        "id": row.get("PRODUKT_ID", ""),
+        "name": row.get("NAVN", ""),
+        "itemNumber": row.get("VARENUMMER", ""),
+        "unitPrice": row.get("ENHETSPRIS", ""),
+        "unitPriceDisplay": _format_price(row.get("ENHETSPRIS", "")),
+        "costPrice": row.get("KOSTPRIS", ""),
+        "costPriceDisplay": _format_price(row.get("KOSTPRIS", "")),
+        "vatType": row.get("MVA_TYPE", ""),
+        "incomeAccount": row.get("INNTEKTSKONTO", ""),
+    }
+
+
+def search_products(query: str) -> list[dict]:
+    needle = _normalize(query)
+    if not needle:
+        return []
+
+    matches = []
+    for row in read_dataease_records(PRODUCT_FILE):
+        searchable = _normalize(
+            " ".join(
+                str(row.get(field, ""))
+                for field in ["NAVN", "VARENUMMER", "MVA_TYPE", "INNTEKTSKONTO"]
+            )
+        )
+
+        if needle in searchable or all(part in searchable for part in needle.split()):
+            matches.append(_product_payload(row))
+
+    return matches
+
+
+def list_products() -> list[dict]:
+    return [_product_payload(row) for row in read_dataease_records(PRODUCT_FILE)]
 
 
 def json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict | list) -> None:
@@ -388,12 +434,14 @@ HTML = """<!doctype html>
     <aside class="sidebar">
       <p class="brand">DataEase</p>
       <nav class="menu" aria-label="Hovedmeny">
-        <button class="menu-button active" type="button" data-view="search-view">Søk</button>
-        <button class="menu-button" type="button" data-view="list-view">Liste</button>
+        <button class="menu-button active" type="button" data-view="search-view">Person-Søk</button>
+        <button class="menu-button" type="button" data-view="list-view">Liste over personer</button>
+        <button class="menu-button" type="button" data-view="product-search-view">Produkt-Søk</button>
+        <button class="menu-button" type="button" data-view="product-list-view">Liste over produkter</button>
       </nav>
     </aside>
     <main>
-      <div class="data-source">Current data is from file: CUSTOMERS.DBM</div>
+      <div class="data-source">Current data is from files: CUSTOMERS.DBM / PRODUKTER.DBM</div>
       <section class="view active" id="search-view">
         <h1>Personsøk</h1>
         <p class="lede">Skriv inn fornavn og etternavn for å hente kontaktinformasjon fra DataEase-filen.</p>
@@ -410,6 +458,22 @@ HTML = """<!doctype html>
         <div class="status" id="list-status"></div>
         <section id="list-results" aria-live="polite"></section>
       </section>
+      <section class="view" id="product-search-view">
+        <h1>Produktsøk</h1>
+        <p class="lede">Søk etter produktnavn, varenummer, MVA-type eller inntektskonto.</p>
+        <form class="search" id="product-search-form">
+          <input id="product-query" name="product-query" placeholder="F.eks. Arbeidstid eller 3020">
+          <button type="submit">Søk</button>
+        </form>
+        <div class="status" id="product-status"></div>
+        <section class="results" id="product-results" aria-live="polite"></section>
+      </section>
+      <section class="view" id="product-list-view">
+        <h1>Produktliste</h1>
+        <p class="lede">Alle produkter i produkttabellen.</p>
+        <div class="status" id="product-list-status"></div>
+        <section id="product-list-results" aria-live="polite"></section>
+      </section>
     </main>
   </div>
   <script>
@@ -421,7 +485,14 @@ HTML = """<!doctype html>
     const results = document.querySelector("#results");
     const listStatus = document.querySelector("#list-status");
     const listResults = document.querySelector("#list-results");
+    const productForm = document.querySelector("#product-search-form");
+    const productInput = document.querySelector("#product-query");
+    const productStatus = document.querySelector("#product-status");
+    const productResults = document.querySelector("#product-results");
+    const productListStatus = document.querySelector("#product-list-status");
+    const productListResults = document.querySelector("#product-list-results");
     let listLoaded = false;
+    let productListLoaded = false;
 
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -489,6 +560,64 @@ HTML = """<!doctype html>
       `;
     }
 
+    function renderProducts(products, target) {
+      if (!products.length) {
+        target.innerHTML = '<div class="empty">Ingen produkter funnet.</div>';
+        return;
+      }
+
+      target.innerHTML = products.map((product) => `
+        <article class="person">
+          <h2>${escapeHtml(product.name)}</h2>
+          <dl>
+            <dt>Varenummer</dt><dd>${escapeHtml(product.itemNumber || "-")}</dd>
+            <dt>Enhetspris</dt><dd>${escapeHtml(product.unitPriceDisplay)}</dd>
+            <dt>Kostpris</dt><dd>${escapeHtml(product.costPriceDisplay)}</dd>
+            <dt>MVA</dt><dd>${escapeHtml(product.vatType)}</dd>
+            <dt>Konto</dt><dd>${escapeHtml(product.incomeAccount)}</dd>
+          </dl>
+        </article>
+      `).join("");
+    }
+
+    function renderProductList(products) {
+      if (!products.length) {
+        productListResults.innerHTML = '<div class="empty">Ingen produkter funnet.</div>';
+        return;
+      }
+
+      productListResults.innerHTML = `
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Produkt</th>
+                <th>Varenummer</th>
+                <th>Enhetspris</th>
+                <th>Kostpris</th>
+                <th>MVA</th>
+                <th>Konto</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${products.map((product) => `
+                <tr>
+                  <td>${escapeHtml(product.id)}</td>
+                  <td>${escapeHtml(product.name)}</td>
+                  <td>${escapeHtml(product.itemNumber)}</td>
+                  <td>${escapeHtml(product.unitPriceDisplay)}</td>
+                  <td>${escapeHtml(product.costPriceDisplay)}</td>
+                  <td>${escapeHtml(product.vatType)}</td>
+                  <td>${escapeHtml(product.incomeAccount)}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
     async function loadList() {
       if (listLoaded) return;
       listStatus.textContent = "Laster records...";
@@ -507,6 +636,24 @@ HTML = """<!doctype html>
       }
     }
 
+    async function loadProductList() {
+      if (productListLoaded) return;
+      productListStatus.textContent = "Laster produkter...";
+      productListResults.innerHTML = "";
+
+      try {
+        const response = await fetch("/api/products");
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Kunne ikke laste produkter.");
+        productListStatus.textContent = `${payload.length} produkter`;
+        renderProductList(payload);
+        productListLoaded = true;
+      } catch (error) {
+        productListStatus.textContent = error.message;
+        productListResults.innerHTML = "";
+      }
+    }
+
     menuButtons.forEach((button) => {
       button.addEventListener("click", () => {
         const viewId = button.dataset.view;
@@ -514,6 +661,8 @@ HTML = """<!doctype html>
         views.forEach((view) => view.classList.toggle("active", view.id === viewId));
         if (viewId === "list-view") loadList();
         if (viewId === "search-view") input.focus();
+        if (viewId === "product-list-view") loadProductList();
+        if (viewId === "product-search-view") productInput.focus();
       });
     });
 
@@ -538,6 +687,30 @@ HTML = """<!doctype html>
       } catch (error) {
         status.textContent = error.message;
         results.innerHTML = "";
+      }
+    });
+
+    productForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const query = productInput.value.trim();
+      if (!query) {
+        productStatus.textContent = "Skriv inn et produkt, varenummer eller konto først.";
+        productResults.innerHTML = "";
+        return;
+      }
+
+      productStatus.textContent = "Søker...";
+      productResults.innerHTML = "";
+
+      try {
+        const response = await fetch(`/api/products/search?query=${encodeURIComponent(query)}`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Produktsøket feilet.");
+        productStatus.textContent = `${payload.length} treff for "${query}"`;
+        renderProducts(payload, productResults);
+      } catch (error) {
+        productStatus.textContent = error.message;
+        productResults.innerHTML = "";
       }
     });
   </script>
@@ -569,6 +742,21 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/records":
             try:
                 json_response(self, 200, list_people())
+            except Exception as exc:
+                json_response(self, 500, {"error": str(exc)})
+            return
+
+        if parsed.path == "/api/products/search":
+            query = parse_qs(parsed.query).get("query", [""])[0]
+            try:
+                json_response(self, 200, search_products(query))
+            except Exception as exc:
+                json_response(self, 500, {"error": str(exc)})
+            return
+
+        if parsed.path == "/api/products":
+            try:
+                json_response(self, 200, list_products())
             except Exception as exc:
                 json_response(self, 500, {"error": str(exc)})
             return
