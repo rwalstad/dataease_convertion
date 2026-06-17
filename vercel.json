@@ -1,0 +1,16 @@
+{
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/api/search",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/api/records",
+      "destination": "/api/index"
+    }
+  ]
+}
