@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import cgi
+import base64
 import json
 import os
 import struct
@@ -19,6 +20,8 @@ from generate_dataease_dbm import parse_csv
 BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / "CUSTOMERS.DBM"
 PRODUCT_FILE = BASE_DIR / "PRODUKTER.DBM"
+IS_VERCEL = os.environ.get("VERCEL") == "1" or BASE_DIR == Path("/var/task")
+DEFAULT_OUTPUT_DIR = Path("/tmp/dataease_convertion") if IS_VERCEL else BASE_DIR
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("PORT", "8000"))
 
@@ -198,14 +201,33 @@ def list_products() -> list[dict]:
     return [_product_payload(row) for row in read_dataease_records(PRODUCT_FILE)]
 
 
+def resolve_output_dir(output_dir: str) -> Path:
+    requested = (output_dir or "").strip()
+    if IS_VERCEL:
+        if not requested or requested in {".", "./"}:
+            return DEFAULT_OUTPUT_DIR
+
+        candidate = Path(requested).expanduser()
+        if candidate.is_absolute():
+            tmp_dir = Path("/tmp")
+            if candidate == tmp_dir or tmp_dir in candidate.parents:
+                return candidate
+            return DEFAULT_OUTPUT_DIR / candidate.name
+
+        return DEFAULT_OUTPUT_DIR / candidate
+
+    target_dir = Path(requested).expanduser() if requested else DEFAULT_OUTPUT_DIR
+    if not target_dir.is_absolute():
+        target_dir = BASE_DIR / target_dir
+    return target_dir
+
+
 def convert_csv(csv_path: str, table_name: str, output_dir: str) -> dict:
     source = Path(csv_path).expanduser()
-    target_dir = Path(output_dir).expanduser() if output_dir else BASE_DIR
+    target_dir = resolve_output_dir(output_dir)
 
     if not source.is_absolute():
         source = BASE_DIR / source
-    if not target_dir.is_absolute():
-        target_dir = BASE_DIR / target_dir
 
     if not source.exists():
         raise ValueError(f"CSV-filen finnes ikke: {source}")
@@ -221,6 +243,12 @@ def convert_csv(csv_path: str, table_name: str, output_dir: str) -> dict:
         "records": len(records),
         "dbm": str(dbm_path),
         "tdf": str(tdf_path),
+        "outputDir": str(target_dir),
+        "dbmFilename": dbm_path.name,
+        "tdfFilename": tdf_path.name,
+        "dbmBase64": base64.b64encode(dbm_path.read_bytes()).decode("ascii"),
+        "tdfBase64": base64.b64encode(tdf_path.read_bytes()).decode("ascii"),
+        "temporaryOutput": IS_VERCEL,
     }
 
 
@@ -229,9 +257,7 @@ def convert_uploaded_csv(file_item, table_name: str, output_dir: str) -> dict:
     if not filename:
         raise ValueError("Velg en CSV-fil først.")
 
-    target_dir = Path(output_dir).expanduser() if output_dir else BASE_DIR
-    if not target_dir.is_absolute():
-        target_dir = BASE_DIR / target_dir
+    target_dir = resolve_output_dir(output_dir)
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
         temp_path = Path(temp_file.name)
@@ -250,6 +276,12 @@ def convert_uploaded_csv(file_item, table_name: str, output_dir: str) -> dict:
         "records": len(records),
         "dbm": str(dbm_path),
         "tdf": str(tdf_path),
+        "outputDir": str(target_dir),
+        "dbmFilename": dbm_path.name,
+        "tdfFilename": tdf_path.name,
+        "dbmBase64": base64.b64encode(dbm_path.read_bytes()).decode("ascii"),
+        "tdfBase64": base64.b64encode(tdf_path.read_bytes()).decode("ascii"),
+        "temporaryOutput": IS_VERCEL,
         "source": filename,
     }
 
@@ -569,7 +601,7 @@ HTML = """<!doctype html>
           </div>
           <div class="field">
             <label for="csv-output">Output-mappe</label>
-            <input id="csv-output" name="csv-output" value=".">
+            <input id="csv-output" name="csv-output" placeholder="Lokalt: f.eks. testkonvertering. På nett brukes midlertidig /tmp.">
           </div>
           <button type="submit">Konverter</button>
         </form>
@@ -727,15 +759,30 @@ HTML = """<!doctype html>
     }
 
     function renderConversion(payload) {
+      const downloadLinks = payload.dbmBase64 && payload.tdfBase64 ? `
+        <dt>Nedlasting</dt>
+        <dd>
+          <a download="${escapeHtml(payload.dbmFilename)}" href="data:application/octet-stream;base64,${escapeHtml(payload.dbmBase64)}">Last ned DBM</a>
+          &nbsp;
+          <a download="${escapeHtml(payload.tdfFilename)}" href="data:text/plain;base64,${escapeHtml(payload.tdfBase64)}">Last ned TDF</a>
+        </dd>
+      ` : "";
+      const temporaryNote = payload.temporaryOutput
+        ? '<dt>Lagring</dt><dd>Midlertidig servermappe. Last ned filene for å beholde dem.</dd>'
+        : "";
+
       csvConvertResults.innerHTML = `
         <article class="person">
           <h2>${escapeHtml(payload.table)}</h2>
           <dl>
             <dt>DBM-fil</dt><dd>${escapeHtml(payload.dbm)}</dd>
             <dt>TDF-fil</dt><dd>${escapeHtml(payload.tdf)}</dd>
+            <dt>Output-mappe</dt><dd>${escapeHtml(payload.outputDir || "-")}</dd>
             <dt>CSV-fil</dt><dd>${escapeHtml(payload.source || "-")}</dd>
             <dt>Felter</dt><dd>${escapeHtml(payload.fields)}</dd>
             <dt>Records</dt><dd>${escapeHtml(payload.records)}</dd>
+            ${temporaryNote}
+            ${downloadLinks}
           </dl>
         </article>
       `;
