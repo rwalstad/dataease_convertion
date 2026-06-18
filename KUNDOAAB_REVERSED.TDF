@@ -1,0 +1,279 @@
+TABLE: KUNDOAAB
+SOURCE: Reversed from KUNDOAAB.DBA + KUNDOAAB.DBM
+DATAEASE_VERSION: DOS 4.2.3 (inferred from source system)
+FIELDS_IN_DBA: 253
+STORED_FIELDS_IN_DBM: 167
+RECORD_SIZE: 1000 bytes
+TOTAL_RECORDS: 8233
+
+NOTES:
+  - This file is reconstructed, not an original DataEase .TDF.
+  - Offset/length/type come from 16-byte field descriptors in KUNDOAAB.DBA.
+  - STORED=yes means the field points inside the 1000-byte DBM record.
+  - STORED=no usually means calculated/lookup/screen-only metadata.
+  - Text is decoded as DOS code page 865, matching Norwegian æ/ø/å bytes.
+  - Type names are inferred from observed DataEase DOS descriptor codes.
+
+#    NAME                      TYPE             DISP STORE DEC OFFSET STORED SAMPLES
+------------------------------------------------------------------------------------------------------------------------
+1    Dato                      Date                8     6   0   1000 no     
+2    Firmanr                   Number/Decimal      1     1   0     34 yes    hex:01
+3    Kundenr                   Number              4     4   0     35 yes    0001; 0002; 0003; 0004; 0005
+4    Teller                    Number/Decimal      1     1   0   1006 no     
+5    Firmanummer               Number/Decimal      1     1   0     39 yes    hex:01; hex:05; hex:09; hex:07; hex:02
+6    Gruppe                    Choice/Lookup       1     1   0     40 yes    code:0; code:2; code:3; code:1
+7    Kundegruppe               Choice/Lookup       8     1   0     41 yes    code:0; code:3; code:7; code:12; code:8
+8    Distr                     Choice/Lookup      15     1   0     42 yes    code:5; code:1; code:3; code:6; code:2
+9    Navn                      Text               30    30   0     43 yes    A. M. SHOP; NORGES SKIFORBUND Bruk 2585; ABELSON AS; I. AKER-IVERSEN INTERIØR AS; ALLADIN HOBBY
+10   Telefon                   Text               13    13   0     73 yes    69 81 54 30; 22 55 72 08; 41 51 61 60; 62 81 73 35; 33 12 49 26
+11   Opphav                    Choice/Lookup       7     1   0     86 yes    code:1; code:2; code:19; code:6; code:12
+12   Navn1                     Text               30    30   0     87 yes    v/Einar Witteveen; ---KONKURS 19.10.18-----; Tomtegt; Postboks 62; Kristin Normann Bakke
+13   Telefax                   Text               13    13   0    117 yes    22 55 72 09; 908 48 560; 63 81 97 24; 33 31 41 07; 75 18 22 19
+14   Kategori                  Choice/Lookup      14     1   0    130 yes    code:2; code:3; code:1; code:4; code:5
+15   Adresse                   Text               30    30   0    131 yes    Jernbanegt 12; Sognsv 75J; Skovveien 27; Jernbanealleen 26; Boks 544
+16   Spes_Stat                 Choice/Lookup       3     1   0   1007 no     
+17   Bankgiro                  Number             13    11   9    161 yes    17300788114; 62720524746; 12860500041; 08035126016; 61400507790
+18   Postnr                    Text                8     8   0    172 yes    1890; 0855; 0257; 3210; 2200
+19   Poststed                  Text               20    20   0    180 yes    RAKKESTAD; OSLO 8; OSLO 2; SANDEFJORD; KONGSVINGER
+20   Adressemerke              Text                2     2   0   1008 no     
+21   Språkkode                 Text                2     2   0    200 yes    NO; oO; no; O; 99
+22   Foretaknr                 Number             10    10   0    202 yes    0919493844; 0996935833; 0924524189; 0921638310; 0984329598
+23   Kontaktperson             Text               30    30   0    212 yes    Nora Abelson Sahlén; Elisabeth Firing; INGER KORSLUND; Marianne Tveit; Anne Marie Gjestdal
+24   Valuta                    Text                3     3   0    242 yes    NOK; EEK; SEK; FIM; DEM
+25   Dropp                     Choice/Lookup       5     1   0    245 yes    code:0; code:2; code:1
+26   Mail_adresse              Text               40    40   0    246 yes    post@akeriversen.no; goodvibe@live.no; olaug.aarthun@gmail.com; karianneveka@live.no; post@broderistua.no
+27   Giro_Rabatt               Choice/Lookup       3     1   0    286 yes    code:0
+28   Sytråd                    Choice/Lookup      13     1   0    287 yes    code:0; code:1; code:6; code:9; code:8
+29   Selgernr                  Number              2     2   0    288 yes    13; 11; 16; 14; 15
+30   Selgernavn                Text               25    25   0   1010 no     
+31   Mettler                   Text               15    15   0    290 yes    1209+1202+1202; 609A + 602A; 602A + 605A; 605A; 802A+809A
+32   Kjedenr                   Number              4     4   0    305 yes    9036; 9117; 9049; 9028; 9004
+33   Kjedenavn                 Text               25    25   0   1035 no     
+34   Kjedebet                  Choice/Lookup       3     1   0    309 yes    code:2; code:1
+35   Mettlerår                 Text                7     7   0    310 yes    2012-02; 2014-11; 2014-05; 2014-06; 2014-08
+36   Selskapnr                 Number              2     2   0    317 yes    01
+37   Selskapnavn               Text               25    25   0   1060 no     
+38   Faktkjede                 Choice/Lookup       3     1   0    319 yes    code:2; code:1
+39   Fakturakjedenr            Number              4     4   0    320 yes    9004; 9033; 9132; 9053; 9074
+40   Pristype                  Choice/Lookup      11     1   0    324 yes    code:1; code:2
+41   Katalogbarn               Number/Decimal      1     1   0   1085 no     
+42   Stilnytt                  Number/Decimal      5     2   0   1086 no     
+43   Logo                      Choice/Lookup       3     1   0   1088 no     
+44   Katalogvoksen             Number/Decimal      1     1   0   1089 no     
+45   Faktrab                   Number/Decimal      4     4   1    325 yes    hex:00000080; hex:00004041; hex:0000a040; hex:00000041; hex:00002041
+46   Kontrab                   Number/Decimal      4     4   1    329 yes    hex:00000040; hex:00002041; hex:0000a040; hex:00004040; hex:0000e040
+47   Bonus                     Number/Decimal      4     4   1    333 yes    hex:00000080; hex:00000040; hex:0000a040; hex:00004040; hex:00002041
+48   Utpris                    Choice/Lookup       3     1   0    337 yes    code:1; code:2
+49   Factor                    Number/Decimal      4     4   1    338 yes    hex:00000080; hex:0000c03f; hex:00004040; ffª?; ñp╜?
+50   Oppkrav                   Choice/Lookup       3     1   0    342 yes    code:2; code:1
+51   Factoring                 Choice/Lookup       3     1   0    343 yes    code:1; code:2
+52   Inkasso                   Choice/Lookup       3     1   0    344 yes    code:2; code:0; code:1
+53   Eksport                   Choice/Lookup       3     1   0    345 yes    code:2; code:1
+54   Giro                      Choice/Lookup       3     1   0   1090 no     
+55   KID_Kto                   Choice/Lookup       3     1   0   1091 no     
+56   Bgbeløp                   Choice/Lookup       3     1   0    346 yes    code:2; code:0; code:1
+57   EDI_Faktura               Choice/Lookup       3     1   0    347 yes    code:2
+58   OverfComp                 Choice/Lookup       3     1   0    348 yes    code:1; code:2
+59   Svart                     Text                1     1   0    349 yes    Y; X; Z; x; ,
+60   Antmønster                Choice/Lookup       1     1   0    350 yes    code:0; code:3; code:1; code:2; code:4
+61   Regdato                   Date                8     6   0    351 yes    181102; 090811; 231120; 310789; 110311
+62   Long:Merk1                Text               60    60   0    357 yes    De kjøper sikkerhetsnåler for 8 øre pr stk (samme som kunde; 1/95 Dette er tidligere Erik W. Abelson AS(ikke AS hos oss); Ny eier 1/90 FAKT. må sendes i posten 12,5.04; Notat v/Mette 6/91=OPPHØRSSALG; Brukt en gammel konto. Juni 12 ut av H&D + inn i Poulsson
+63   D                         Text                1     1   0    417 yes    b; 2; x; X; B
+64   Long:Merk2                Text               60    60   0    418 yes    4066); Det er tydeligvis datterens som har overtatt.; Bonus = se kundemerknad, men tilknyttet Botex 9/90 ./.; 2014-06: tatt vekk 8F uten info.; Mobil: 902 55 381
+65   Når                       Date                8     6   0    478 yes    120995; 131095; 200995; 310895; 021095
+66   Long:Merk3                Text               60    60   0    484 yes    Tidl. Abelson Brukskunst; 2017-01 nå tilknyttet H&D.; satt på oppkrav 3.7.02 skylder 8.601,83 iflg.av 28.04.05 s0; Faktura på mail; 14/10-05:Flyttet fra Vammavn 5.
+67   Syfest95                  Choice/Lookup       3     1   0    544 yes    code:0
+68   K                         Text                1     1   0    545 yes    2; x; X; +
+69   S                         Text                1     1   0    546 yes    2; x; X
+70   Stopp                     Text                1     1   0    547 yes    E; o; u
+71   Kundenr_1                 Number              4     4   0   1092 no     
+72   Navn_1                    Text               30    30   0   1096 no     
+73   Kunde_Aar                 Text                8     8   0   1126 no     
+74   Statår                    Number              4     4   0   1134 no     
+75   Statår2                   Number              4     4   0   1138 no     
+76   Statår3                   Number              4     4   0   1142 no     
+77   Statår4                   Number              4     4   0   1146 no     
+78   Statår5                   Number              4     4   0   1150 no     
+79   Salg_1                    Number/Decimal      7     4   0    548 yes    hex:9f0e0000; hex:fe0e0000; po; U; hex:7f110000
+80   Selg_1                    Number/Decimal      7     4   0    552 yes    3,; ); Ñ; hex:63070000; ë
+81   Salg2_1                   Number/Decimal      7     4   0    556 yes    ≡; ▓k; hex:96130000; hex:40130000; hex:cc050000
+82   Selg2_1                   Number/Decimal      7     4   0    560 yes    ╘; hex:d7130000; hex:171b0000; ≥6; hex:10090000
+83   Salg3_1                   Number/Decimal      7     4   0    564 yes    √; hex:91020000; ÜR; hex:b10f0000; ∙2
+84   Salg4_1                   Number/Decimal      7     4   0    568 yes    hex:e7050000; ╡D; v<; hex:38020000; ╓B
+85   Salg5_1                   Number/Decimal      7     4   0    572 yes    ▐>; hex:c40e0000; 'F; ╬; hex:1e0e0000
+86   Salg_2                    Number/Decimal      7     4   0    576 yes    å; hex:1d0c0000; 7; hex:16580000; hex:94020000
+87   Salg_Akk_2                Number/Decimal      3     2   0   1154 no     
+88   Selg_2                    Number/Decimal      7     4   0    580 yes    B; Y; -:; hex:e91b0000; hex:b60f0000
+89   Salg2_2                   Number/Decimal      7     4   0    584 yes    hex:fb060000; hex:af180000; ÷l; b; hex:07090000
+90   Salg2_Akk_2               Number/Decimal      3     2   0   1156 no     
+91   Selg2_2                   Number/Decimal      7     4   0    588 yes    hex:bf170000; &; b; Σ1; Ä
+92   Salg3_2                   Number/Decimal      7     4   0    592 yes    hex:6e070000; î/; hex:d0120000; hex:08130000; hex:c0030000
+93   Salg3_Akk_2               Number/Decimal      3     2   0   1158 no     
+94   Salg4_2                   Number/Decimal      7     4   0    596 yes    hex:28050000; hex:ce140000; ü:; hex:d1050000; hex:d3030000
+95   Salg5_2                   Number/Decimal      7     4   0    600 yes    hex:5c070000; hex:05330000; hex:b3080000; ~,; 39
+96   Salg_3                    Number/Decimal      7     4   0    604 yes    n; -Y; ï; hex:170f0000; hex:df040000
+97   Salg_Akk_3                Number/Decimal      3     2   0   1160 no     
+98   Selg_3                    Number/Decimal      7     4   0    608 yes    ï; hex:df040000; hex:85070000; hex:16100000; `
+99   Salg2_3                   Number/Decimal      7     4   0    612 yes    hex:c0190000; hex:21110000; hex:ca040000; hex:fc080000; hex:22010000
+100  Salg2_Akk_3               Number/Decimal      3     2   0   1162 no     
+101  Selg2_3                   Number/Decimal      7     4   0    616 yes    hex:c0190000; hex:21110000; å/; hex:fa120000; hex:7b080000
+102  Salg3_3                   Number/Decimal      7     4   0    620 yes    M; hex:cf0e0000; hex:13520000; hex:41140000; hex:7f070000
+103  Salg3_Akk_3               Number/Decimal      3     2   0   1164 no     
+104  Salg4_3                   Number/Decimal      7     4   0    624 yes    hex:b5010000; N; hex:f3060000; L9; hex:bb1b0000
+105  Salg5_3                   Number/Decimal      7     4   0    628 yes    hex:99140000; hex:da030000; Q; T; hex:34020000
+106  Salg_4                    Number/Decimal      7     4   0    632 yes    =R; hex:e7170000; hex:4a040000; Ñ; hex:5a020000
+107  Salg_Akk_4                Number/Decimal      3     2   0   1166 no     
+108  Selg_4                    Number/Decimal      7     4   0    636 yes    hex:e7170000; ╘,; hex:09190000; hex:19260000; hex:171e0000
+109  Salg2_4                   Number/Decimal      7     4   0    640 yes    `.; hex:35040000; hex:af110000; hex:032c0000; hex:0d020000
+110  Salg2_Akk_4               Number/Decimal      3     2   0   1168 no     
+111  Selg2_4                   Number/Decimal      7     4   0    644 yes    hex:13100000; hex:1b1f0000; hex:44190000; ô"; hex:01250000
+112  Salg3_4                   Number/Decimal      7     4   0    648 yes    hex:e7030000; ∙; ╨;; hex:b40f0000; hex:cb170000
+113  Salg3_Akk_4               Number/Decimal      3     2   0   1170 no     
+114  Salg4_4                   Number/Decimal      7     4   0    652 yes    hex:87030000; hex:66150000; ); hex:e6060000; hex:82110000
+115  Salg5_4                   Number/Decimal      7     4   0    656 yes    hex:17070000; 8D; hex:bb190000; ƒ2; hex:de010000
+116  Salg_5                    Number/Decimal      7     4   0    660 yes    hex:ab140000; /m; hex:8f030000; <; hex:3c040000
+117  Salg_Akk_5                Number/Decimal      3     2   0   1172 no     
+118  Selg_5                    Number/Decimal      7     4   0    664 yes    hex:ab140000; <; hex:3c040000; æ; hex:d8060000
+119  Salg2_5                   Number/Decimal      7     4   0    668 yes    hex:e2040000; hex:13140000; Öu; hex:fc030000; hex:ad1a0000
+120  Salg2_Akk_5               Number/Decimal      3     2   0   1174 no     
+121  Selg2_5                   Number/Decimal      7     4   0    672 yes    hex:e2040000; hex:13140000; ╟Q; hex:ad1a0000; i-
+122  Salg3_5                   Number/Decimal      7     4   0    676 yes    hex:fa050000; ½7; hex:50030000; Ö; .
+123  Salg3_Akk_5               Number/Decimal      3     2   0   1176 no     
+124  Salg4_5                   Number/Decimal      7     4   0    680 yes    hex:e5020000; â%; É; S; █7
+125  Salg5_5                   Number/Decimal      7     4   0    684 yes    hex:c90f0000; hex:d6010000; hex:06230000; \; hex:87050000
+126  Salg_6                    Number/Decimal      7     4   0    688 yes    ò; %G; hex:59120000; hex:88080000; ∩
+127  Salg_Akk_6                Number/Decimal      3     2   0   1178 no     
+128  Selg_6                    Number/Decimal      7     4   0    692 yes    '; hex:81050000; hex:59120000; hex:88080000; K
+129  Salg2_6                   Number/Decimal      7     4   0    696 yes    hex:06100000; hex:53070000; ═; w=; hex:f7110000
+130  Salg2_Akk_6               Number/Decimal      3     2   0   1180 no     
+131  Selg2_6                   Number/Decimal      7     4   0    700 yes    hex:06100000; ┴3; hex:c1140000; hex:1e0a0000; ì
+132  Salg3_6                   Number/Decimal      7     4   0    704 yes    hex:ca070000; ╨T; hex:71070000; hex:06050000; P
+133  Salg3_Akk_6               Number/Decimal      3     2   0   1182 no     
+134  Salg4_6                   Number/Decimal      7     4   0    708 yes    hex:100e0000; ~%; hex:9d100000; hex:36040000; hex:35050000
+135  Salg5_6                   Number/Decimal      7     4   0    712 yes    æO; ÷; hex:16120000; hex:69060000; hex:bc030000
+136  Salg_7                    Number/Decimal      7     4   0    716 yes    U"; hex:45070000; %; ¤; hex:110b0000
+137  Salg_Akk_7                Number/Decimal      3     2   0   1184 no     
+138  Selg_7                    Number/Decimal      7     4   0    720 yes    hex:ca100000; hex:53100000; hex:c7140000; ╞*; hex:e5120000
+139  Salg2_7                   Number/Decimal      7     4   0    724 yes    J+; π; Φ; hex:c1030000; hex:43140000
+140  Salg2_Akk_7               Number/Decimal      3     2   0   1186 no     
+141  Selg2_7                   Number/Decimal      7     4   0    728 yes    l; é⌡; hex:5c050000; Ä; hex:60040000
+142  Salg3_7                   Number/Decimal      7     4   0    732 yes    hex:61060000; ■4; hex:f40e0000; S; $
+143  Salg3_Akk_7               Number/Decimal      3     2   0   1188 no     
+144  Salg4_7                   Number/Decimal      7     4   0    736 yes    û&; ); hex:fd1a0000; ┐%; F
+145  Salg5_7                   Number/Decimal      7     4   0    740 yes    hex:58100000; {∞; v; └; K$
+146  Salg_8                    Number/Decimal      7     4   0    744 yes    hex:8c040000; hex:c7130000; hex:1b640000; Ø; hex:14070000
+147  Salg_Akk_8                Number/Decimal      3     2   0   1190 no     
+148  Selg_8                    Number/Decimal      7     4   0    748 yes    hex:c7130000; ═A; ù); hex:fc020000; hex:e10f0000
+149  Salg2_8                   Number/Decimal      7     4   0    752 yes    hex:7c010000; hex:6f1a0000; hex:fe070000; ú_; hex:9e160000
+150  Salg2_Akk_8               Number/Decimal      3     2   0   1192 no     
+151  Selg2_8                   Number/Decimal      7     4   0    756 yes    hex:6f1a0000; hex:a4150000; hex:a1050000; hex:0a090000; ëD
+152  Salg3_8                   Number/Decimal      7     4   0    760 yes    hex:890e0000; hex:8e0e0000; ë+; hex:0e090000; ╚
+153  Salg3_Akk_8               Number/Decimal      3     2   0   1194 no     
+154  Salg4_8                   Number/Decimal      7     4   0    764 yes    hex:d8060000; ▄?; hex:f1150000; hex:13040000; y
+155  Salg5_8                   Number/Decimal      7     4   0    768 yes    hex:1b270000; hex:0f1e0000; ⌡; hex:12130000; ╚(
+156  Salg_9                    Number/Decimal      7     4   0    772 yes    hex:b9010000; ╙B; hex:4b070000; Ω#; hex:58190000
+157  Salg_Akk_9                Number/Decimal      3     2   0   1196 no     
+158  Selg_9                    Number/Decimal      7     4   0    776 yes    hex:4b070000; Ω#; hex:58190000; ï; >
+159  Salg2_9                   Number/Decimal      7     4   0    780 yes    ô; hex:06170000; 7; Ü; ╪
+160  Salg2_Akk_9               Number/Decimal      3     2   0   1198 no     
+161  Selg2_9                   Number/Decimal      7     4   0    784 yes    hex:06170000; Ü; ╪; ø; hex:b6080000
+162  Salg3_9                   Number/Decimal      7     4   0    788 yes    hex:c3030000; !; hex:64100000; hex:135e0000; ╦
+163  Salg3_Akk_9               Number/Decimal      3     2   0   1200 no     
+164  Salg4_9                   Number/Decimal      7     4   0    792 yes    hex:18150000; (; hex:80010000; ¡; ╛N
+165  Salg5_9                   Number/Decimal      7     4   0    796 yes    ; hex:261b0000; └S; hex:0b170000; hex:ba080000
+166  Salg_10                   Number/Decimal      7     4   0    800 yes    hex:8d100000; °; pª; hex:b71a0000; hex:e4060000
+167  Salg_Akk_10               Number/Decimal      3     2   0   1202 no     
+168  Selg_10                   Number/Decimal      7     4   0    804 yes    hex:8d100000; °; hex:b71a0000; ì; hex:5e110000
+169  Salg2_10                  Number/Decimal      7     4   0    808 yes    hex:3e120000; ⌡t; !; ∩.; )&
+170  Salg2_Akk_10              Number/Decimal      3     2   0   1204 no     
+171  Selg2_10                  Number/Decimal      7     4   0    812 yes    hex:3e120000; ╧; !; └#; hex:11200000
+172  Salg3_10                  Number/Decimal      7     4   0    816 yes    hex:12530000; hex:020a0000; x■; hex:0b010000; ≤>
+173  Salg3_Akk_10              Number/Decimal      3     2   0   1206 no     
+174  Salg4_10                  Number/Decimal      7     4   0    820 yes    hex:97060000; hex:43070000; hex:3f130000; ∙2; hex:580e0000
+175  Salg5_10                  Number/Decimal      7     4   0    824 yes    hex:97070000; τ-; 6; hex:81110000; 1
+176  Salg_11                   Number/Decimal      7     4   0    828 yes    hex:17080000; hex:10030000; ╗M; hex:e50f0000; hex:e2070000
+177  Salg_Akk_11               Number/Decimal      3     2   0   1208 no     
+178  Selg_11                   Number/Decimal      7     4   0    832 yes    hex:e50f0000; hex:e9030000; hex:25110000; hex:7b0f0000; ╕æ
+179  Salg2_11                  Number/Decimal      7     4   0    836 yes    hex:76010000; hex:40040000; 8Z; Φ; hex:e9150000
+180  Salg2_Akk_11              Number/Decimal      3     2   0   1210 no     
+181  Selg2_11                  Number/Decimal      7     4   0    840 yes    hex:40040000; hex:63180000; í; hex:0c200000; hex:2f040000
+182  Salg3_11                  Number/Decimal      7     4   0    844 yes    zx; hex:4f0f0000; .; hex:a30f0000; hex:88010000
+183  Salg3_Akk_11              Number/Decimal      3     2   0   1212 no     
+184  Salg4_11                  Number/Decimal      7     4   0    848 yes    ╟M; hex:e9080000; δ%; hex:19110000; hex:30050000
+185  Salg5_11                  Number/Decimal      7     4   0    852 yes    hex:57040000; hex:49060000; hex:4b0e0000; 6G; hex:76150000
+186  Salg_12                   Number/Decimal      7     4   0    856 yes    K*; ░r; 1; hex:2a060000; hex:fa1a0000
+187  Salg_Akk_12               Number/Decimal      3     2   0   1214 no     
+188  Selg_12                   Number/Decimal      7     4   0    860 yes    ╦F; £1; hex:7f140000; ╠; H2
+189  Salg2_12                  Number/Decimal      7     4   0    864 yes    hex:71020000; ╖2; hex:c7020000; hex:8b100000; hex:d7010000
+190  Salg2_Akk_12              Number/Decimal      3     2   0   1216 no     
+191  Selg2_12                  Number/Decimal      7     4   0    868 yes    hex:71020000; ╙%; h; hex:37190000; hex:dc0e0000
+192  Salg3_12                  Number/Decimal      7     4   0    872 yes    hex:de190000; ø; hex:9f020000; hex:49050000; c
+193  Salg3_Akk_12              Number/Decimal      3     2   0   1218 no     
+194  Salg4_12                  Number/Decimal      7     4   0    876 yes    ∞K; hex:7e110000; \; hex:68020000; i'
+195  Salg5_12                  Number/Decimal      7     4   0    880 yes    èZ; hex:a4010000; hex:2f110000; É; hex:4f0e0000
+196  Netto                     Number/Decimal      9     4   0    884 yes    hex:2b130000; K*; hex:17080000; ╕+; @7
+197  Netto_S                   Number/Decimal      9     4   0    888 yes    ÷&; ├4; üs; hex:4b070000; ≈_
+198  Netto2                    Number/Decimal      9     4   0    892 yes    hex:11240000; gc; hex:35080000; hex:d2520300; hex:e4110000
+199  Netto_S2                  Number/Decimal      9     4   0    896 yes    hex:91190000; ça; hex:7e490100; ╟B; >`
+200  Netto3                    Number/Decimal      9     4   0    900 yes    hex:f7070000; hex:61060000; hex:ca070000; *Ç; hex:91020000
+201  Netto4                    Number/Decimal      9     4   0    904 yes    hex:18150000; hex:18110000; hex:28050000; hex:180b0000; vd
+202  Netto5                    Number/Decimal      9     4   0    908 yes    hex:fb1b0000; hex:360f0000; >; q; hex:dda00200
+203  Brutto                    Number/Decimal      9     4   0    912 yes    hex:8f130000; +; hex:41080000; ÿ,; Z8
+204  Selger_pros               Number/Decimal      3     2   0   1220 no     
+205  Brutto2                   Number/Decimal      9     4   0    916 yes    ╨$; 5d; hex:60080000; hex:65650300; hex:42120000
+206  Selger_pros2              Number/Decimal      3     2   0   1222 no     
+207  Brutto3                   Number/Decimal      9     4   0    920 yes    _; hex:83060000; hex:f3070000; ▒é; hex:9e020000
+208  Brutto4                   Number/Decimal      9     4   0    924 yes    hex:80150000; hex:49160000; hex:43050000; T; f
+209  Brutto5                   Number/Decimal      9     4   0    928 yes    º!; hex:8a0f0000; N?; ½; hex:9aae0200
+210  Dekningsbidrag            Number/Decimal      9     4   0    932 yes    hex:a5080000; hex:3c170000; hex:82040000; hex:b1150000; é!
+211  Sum_1_6                   Number/Decimal      9     4   0   1224 no     
+212  Dekningsbidrag2           Number/Decimal      9     4   0    936 yes    hex:a7100000; ╓;; hex:9f030000; hex:d8e10100; ù
+213  Sum2_1_6                  Number/Decimal      9     4   0   1228 no     
+214  Dekningsbidrag3           Number/Decimal      9     4   0    940 yes    hex:91020000; hex:35030000; hex:5c040000; ═K; hex:27010000
+215  Dekningsbidrag4           Number/Decimal      9     4   0    944 yes    ò; hex:ab050000; hex:d9020000; hex:02050000; I9
+216  Dekningsbidrag5           Number/Decimal      9     4   0    948 yes    A; hex:07080000; l%; hex:04060000; hex:82770100
+217  Bonusgrl                  Number/Decimal      9     4   0    952 yes    hex:2b130000; k(; hex:17080000; hex:01290000; @7
+218  Sum_7_12                  Number/Decimal      9     4   0   1232 no     
+219  Bonusgrl2                 Number/Decimal      9     4   0    956 yes    hex:11240000; ça; hex:35080000; hex:ee450300; hex:e4110000
+220  Sum2_7_12                 Number/Decimal      9     4   0   1236 no     
+221  Bonusgrl3                 Number/Decimal      9     4   0    960 yes    hex:61080000; hex:61060000; hex:ca070000; hex:067d0000; hex:91020000
+222  Bonusgrl4                 Number/Decimal      9     4   0    964 yes    hex:18150000; hex:ff110000; hex:28050000; hex:180b0000; ~a
+223  Bonusgrl5                 Number/Decimal      9     4   0    968 yes    hex:fb1b0000; hex:360f0000; >; q; hex:9a9d0200
+224  Deknprosent               Number/Decimal      5     4   1   1240 no     
+225  BDeknprosent              Number/Decimal      5     4   1   1244 no     
+226  Deknprosent2              Number/Decimal      5     4   1   1248 no     
+227  BDeknprosent2             Number/Decimal      5     4   1   1252 no     
+228  Deknprosent3              Number/Decimal      5     4   1   1256 no     
+229  BDeknprosent3             Number/Decimal      5     4   1   1260 no     
+230  Deknprosent4              Number/Decimal      5     4   1   1264 no     
+231  BDeknprosent4             Number/Decimal      5     4   1   1268 no     
+232  Deknprosent5              Number/Decimal      5     4   1   1272 no     
+233  BDeknprosent5             Number/Decimal      5     4   1   1276 no     
+234  Stopp2                    Text                1     1   0    972 yes    c; 0; r
+235  Kundenr_2                 Number              4     4   0   1280 no     
+236  Navn_2                    Text               25    25   0   1284 no     
+237  Netto3år                  Number/Decimal      9     4   0   1309 no     
+238  Brutto3år                 Number/Decimal      9     4   0   1313 no     
+239  Dekningsbidrag3år         Number/Decimal      9     4   0   1317 no     
+240  BDeknprosent3år6          Number/Decimal      5     4   1   1321 no     
+241  Statår6                   Text                8     8   0   1325 no     
+242  Netto5siste               Number/Decimal      9     4   0   1333 no     
+243  Netto5år                  Number/Decimal      9     4   0   1337 no     
+244  Brutto5år                 Number/Decimal      9     4   0   1341 no     
+245  Dekningsbidrag5år         Number/Decimal      9     4   0   1345 no     
+246  BDeknprosent5år           Number/Decimal      5     4   1   1349 no     
+247  Stopp4                    Text                1     1   0    973 yes    
+248  Kundenr_4                 Number              4     4   0   1353 no     
+249  Navn_4                    Text               30    30   0   1357 no     
+250  Totalt skapsalg           Number/Decimal     10     8   1   1387 no     
+251  Totalt DB skapsalg        Number/Decimal     10     8   1   1395 no     
+252  VATnr                     Text               13    13   0    974 yes    
+253  EAN_Loknr                 Text               13    13   0    987 yes    7080000448548; 7080000113827
+
+RAW_DESCRIPTOR_FORMAT_OBSERVED:
+  byte 2     = type code
+  byte 3     = display length
+  byte 4     = decimals
+  byte 7     = storage length in DBM record
+  bytes 9-10 = little-endian offset into the 1000-byte DBM record
+  16 bytes per descriptor, starting at DBA offset 0x28

@@ -5,6 +5,7 @@ import base64
 import html as html_lib
 import json
 import os
+import re
 import struct
 import shutil
 import tempfile
@@ -21,11 +22,15 @@ from generate_dataease_dbm import parse_csv
 BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / "CUSTOMERS.DBM"
 PRODUCT_FILE = BASE_DIR / "PRODUKTER.DBM"
+AAB_CUSTOMER_FILE = BASE_DIR / "KUNDOAAB.DBM"
+AAB_CUSTOMER_TDF = BASE_DIR / "KUNDOAAB_REVERSED.TDF"
 HOWITWORK_FILE = BASE_DIR / "howitwork.md"
 IS_VERCEL = os.environ.get("VERCEL") == "1" or BASE_DIR == Path("/var/task")
 DEFAULT_OUTPUT_DIR = Path("/tmp/dataease_convertion") if IS_VERCEL else BASE_DIR
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("PORT", "8000"))
+AAB_RECORD_SIZE = 1000
+AAB_ENCODING = "cp865"
 
 
 @dataclass(frozen=True)
@@ -35,6 +40,15 @@ class Field:
     length: int
     decimals: int
     flags: int
+
+
+@dataclass(frozen=True)
+class AabField:
+    name: str
+    type_name: str
+    storage_length: int
+    decimals: int
+    offset: int
 
 
 def _decode_fixed_text(raw: bytes) -> str:
@@ -108,6 +122,121 @@ def read_dataease_records(path: Path = DATA_FILE) -> list[dict]:
         records.append(row)
 
     return records
+
+
+def _decode_aab_text(raw: bytes) -> str:
+    raw = raw.split(b"\x00", 1)[0].rstrip(b"\x00 ")
+    return " ".join(raw.decode(AAB_ENCODING, errors="replace").split())
+
+
+def _parse_aab_layout(path: Path = AAB_CUSTOMER_TDF) -> list[AabField]:
+    fields: list[AabField] = []
+    pattern = re.compile(
+        r"^\s*\d+\s+(?P<name>.{25})\s+"
+        r"(?P<type>.{16})\s+"
+        r"\d+\s+(?P<storage>\d+)\s+(?P<decimals>\d+)\s+"
+        r"(?P<offset>\d+)\s+(?P<stored>yes|no)\b"
+    )
+
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = pattern.match(line)
+        if not match or match.group("stored") != "yes":
+            continue
+        fields.append(
+            AabField(
+                name=match.group("name").strip(),
+                type_name=match.group("type").strip(),
+                storage_length=int(match.group("storage")),
+                decimals=int(match.group("decimals")),
+                offset=int(match.group("offset")),
+            )
+        )
+
+    if not fields:
+        raise ValueError("Fant ingen lagrede felt i KUNDOAAB_REVERSED.TDF.")
+    return fields
+
+
+def _decode_aab_field(field: AabField, raw: bytes):
+    if field.type_name == "Choice/Lookup":
+        return raw[0] if raw else ""
+
+    value = _decode_aab_text(raw)
+    if value:
+        return value
+
+    if any(raw):
+        return raw.hex()
+    return ""
+
+
+def read_aab_customer_records() -> list[dict]:
+    fields = _parse_aab_layout()
+    data = AAB_CUSTOMER_FILE.read_bytes()
+    records: list[dict] = []
+
+    for position in range(0, len(data), AAB_RECORD_SIZE):
+        record = data[position : position + AAB_RECORD_SIZE]
+        if len(record) != AAB_RECORD_SIZE:
+            continue
+
+        row = {}
+        for field in fields:
+            raw = record[field.offset : field.offset + field.storage_length]
+            row[field.name] = _decode_aab_field(field, raw)
+        records.append(row)
+
+    return records
+
+
+def _aab_customer_payload(row: dict) -> dict:
+    postal = " ".join(
+        part
+        for part in [str(row.get("Postnr", "")), str(row.get("Poststed", ""))]
+        if part
+    )
+    return {
+        "customerNumber": row.get("Kundenr", ""),
+        "name": row.get("Navn", ""),
+        "phone": row.get("Telefon", ""),
+        "fax": row.get("Telefax", ""),
+        "address": row.get("Adresse", ""),
+        "postal": postal,
+        "contact": row.get("Kontaktperson", ""),
+        "email": row.get("Mail_adresse", ""),
+        "organizationNumber": row.get("Foretaknr", ""),
+        "sellerNumber": row.get("Selgernr", ""),
+    }
+
+
+def search_aab_customers(query: str) -> list[dict]:
+    needle = _normalize(query)
+    if not needle:
+        return []
+
+    matches = []
+    for row in read_aab_customer_records():
+        searchable = _normalize(
+            " ".join(
+                str(row.get(field, ""))
+                for field in [
+                    "Kundenr",
+                    "Navn",
+                    "Telefon",
+                    "Adresse",
+                    "Postnr",
+                    "Poststed",
+                    "Kontaktperson",
+                    "Mail_adresse",
+                    "Foretaknr",
+                ]
+            )
+        )
+
+        if needle in searchable or all(part in searchable for part in needle.split()):
+            matches.append(_aab_customer_payload(row))
+
+    return matches
 
 
 def search_people(query: str) -> list[dict]:
@@ -647,6 +776,7 @@ HTML = """<!doctype html>
       </div>
       <nav class="menu" aria-label="Hovedmeny">
         <button class="menu-button active" type="button" data-view="search-view">Person-Søk</button>
+        <button class="menu-button" type="button" data-view="aab-customer-search-view">Kundesøk AAB</button>
         <button class="menu-button" type="button" data-view="list-view">Liste over personer</button>
         <button class="menu-button" type="button" data-view="product-search-view">Produkt-Søk</button>
         <button class="menu-button" type="button" data-view="product-list-view">Liste over produkter</button>
@@ -664,6 +794,16 @@ HTML = """<!doctype html>
         </form>
         <div class="status" id="status"></div>
         <section class="results" id="results" aria-live="polite"></section>
+      </section>
+      <section class="view" id="aab-customer-search-view">
+        <h1>Kundesøk AAB</h1>
+        <p class="lede">Søk i KUNDOAAB etter kundenummer, navn, telefon, adresse, kontaktperson, e-post eller foretaksnummer.</p>
+        <form class="search" id="aab-customer-search-form">
+          <input id="aab-customer-query" name="aab-customer-query" placeholder="F.eks. ABELSON eller 0003">
+          <button type="submit">Søk</button>
+        </form>
+        <div class="status" id="aab-customer-status"></div>
+        <section class="results" id="aab-customer-results" aria-live="polite"></section>
       </section>
       <section class="view" id="list-view">
         <h1>Liste</h1>
@@ -717,6 +857,10 @@ HTML = """<!doctype html>
     const input = document.querySelector("#name");
     const status = document.querySelector("#status");
     const results = document.querySelector("#results");
+    const aabCustomerForm = document.querySelector("#aab-customer-search-form");
+    const aabCustomerInput = document.querySelector("#aab-customer-query");
+    const aabCustomerStatus = document.querySelector("#aab-customer-status");
+    const aabCustomerResults = document.querySelector("#aab-customer-results");
     const listStatus = document.querySelector("#list-status");
     const listResults = document.querySelector("#list-results");
     const productForm = document.querySelector("#product-search-form");
@@ -798,6 +942,30 @@ HTML = """<!doctype html>
           </table>
         </div>
       `;
+    }
+
+    function renderAabCustomers(customers) {
+      if (!customers.length) {
+        aabCustomerResults.innerHTML = '<div class="empty">Ingen kunder funnet.</div>';
+        return;
+      }
+
+      aabCustomerResults.innerHTML = customers.map((customer) => `
+        <article class="person">
+          <h2>${escapeHtml(customer.name || customer.customerNumber)}</h2>
+          <dl>
+            <dt>Kundenr</dt><dd>${escapeHtml(customer.customerNumber)}</dd>
+            <dt>Adresse</dt><dd>${escapeHtml(customer.address)}</dd>
+            <dt>Poststed</dt><dd>${escapeHtml(customer.postal)}</dd>
+            <dt>Kontakt</dt><dd>${escapeHtml(customer.contact)}</dd>
+            <dt>E-post</dt><dd>${customer.email ? `<a href="mailto:${escapeHtml(customer.email)}">${escapeHtml(customer.email)}</a>` : ""}</dd>
+            <dt>Telefon</dt><dd>${customer.phone ? `<a href="tel:${escapeHtml(customer.phone)}">${escapeHtml(customer.phone)}</a>` : ""}</dd>
+            <dt>Telefax</dt><dd>${escapeHtml(customer.fax)}</dd>
+            <dt>Foretaknr</dt><dd>${escapeHtml(customer.organizationNumber)}</dd>
+            <dt>Selgernr</dt><dd>${escapeHtml(customer.sellerNumber)}</dd>
+          </dl>
+        </article>
+      `).join("");
     }
 
     function renderProducts(products, target) {
@@ -931,6 +1099,7 @@ HTML = """<!doctype html>
         views.forEach((view) => view.classList.toggle("active", view.id === viewId));
         if (viewId === "list-view") loadList();
         if (viewId === "search-view") input.focus();
+        if (viewId === "aab-customer-search-view") aabCustomerInput.focus();
         if (viewId === "product-list-view") loadProductList();
         if (viewId === "product-search-view") productInput.focus();
         if (viewId === "csv-convert-view") csvFileInput.focus();
@@ -958,6 +1127,30 @@ HTML = """<!doctype html>
       } catch (error) {
         status.textContent = error.message;
         results.innerHTML = "";
+      }
+    });
+
+    aabCustomerForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const query = aabCustomerInput.value.trim();
+      if (!query) {
+        aabCustomerStatus.textContent = "Skriv inn kundenummer, navn eller kontaktinfo først.";
+        aabCustomerResults.innerHTML = "";
+        return;
+      }
+
+      aabCustomerStatus.textContent = "Søker...";
+      aabCustomerResults.innerHTML = "";
+
+      try {
+        const response = await fetch(`/api/aab-customers/search?query=${encodeURIComponent(query)}`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Kundesøket feilet.");
+        aabCustomerStatus.textContent = `${payload.length} treff for "${query}"`;
+        renderAabCustomers(payload);
+      } catch (error) {
+        aabCustomerStatus.textContent = error.message;
+        aabCustomerResults.innerHTML = "";
       }
     });
 
@@ -1047,6 +1240,14 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/records":
             try:
                 json_response(self, 200, list_people())
+            except Exception as exc:
+                json_response(self, 500, {"error": str(exc)})
+            return
+
+        if parsed.path == "/api/aab-customers/search":
+            query = parse_qs(parsed.query).get("query", [""])[0]
+            try:
+                json_response(self, 200, search_aab_customers(query))
             except Exception as exc:
                 json_response(self, 500, {"error": str(exc)})
             return
