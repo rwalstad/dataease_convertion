@@ -31,6 +31,86 @@ HOST = "127.0.0.1"
 PORT = int(os.environ.get("PORT", "8000"))
 AAB_RECORD_SIZE = 1000
 AAB_ENCODING = "cp865"
+AAB_DETAIL_PRIMARY_FIELDS = {
+    "Kundenr",
+    "Navn",
+    "Telefon",
+    "Telefax",
+    "Adresse",
+    "Postnr",
+    "Poststed",
+    "Kontaktperson",
+    "Mail_adresse",
+    "Foretaknr",
+    "Selgernr",
+}
+AAB_DETAIL_GROUPS = [
+    (
+        "Kunde og kontakt",
+        {
+            "Dato",
+            "Firmanr",
+            "Kundenr",
+            "Firmanummer",
+            "Navn",
+            "Navn1",
+            "Telefon",
+            "Telefax",
+            "Adresse",
+            "Postnr",
+            "Poststed",
+            "Språkkode",
+            "Foretaknr",
+            "Kontaktperson",
+            "Mail_adresse",
+            "Regdato",
+        },
+    ),
+    (
+        "Klassifisering og kjeder",
+        {
+            "Gruppe",
+            "Kundegruppe",
+            "Distr",
+            "Opphav",
+            "Kategori",
+            "Selgernr",
+            "Mettler",
+            "Kjedenr",
+            "Kjedebet",
+            "Mettlerår",
+            "Selskapnr",
+            "Faktkjede",
+            "Fakturakjedenr",
+            "Pristype",
+            "Sytråd",
+            "Antmønster",
+        },
+    ),
+    (
+        "Betaling og faktura",
+        {
+            "Bankgiro",
+            "Valuta",
+            "Dropp",
+            "Giro_Rabatt",
+            "Utpris",
+            "Oppkrav",
+            "Factoring",
+            "Inkasso",
+            "Eksport",
+            "Bgbeløp",
+            "EDI_Faktura",
+            "OverfComp",
+        },
+    ),
+    ("Bonus og rabatter", {"Faktrab", "Kontrab", "Bonus", "Bonusgrl", "Bonusgrl2", "Bonusgrl3", "Bonusgrl4", "Bonusgrl5"}),
+    ("Salg", set()),
+    ("Netto og brutto", {"Netto", "Netto_S", "Netto2", "Netto_S2", "Netto3", "Netto4", "Netto5", "Brutto", "Brutto2", "Brutto3", "Brutto4", "Brutto5"}),
+    ("Dekningsbidrag", {"Dekningsbidrag", "Dekningsbidrag2", "Dekningsbidrag3", "Dekningsbidrag4", "Dekningsbidrag5"}),
+    ("EAN/VAT", {"VATnr", "EAN_Loknr"}),
+    ("Merknader og status", {"Long:Merk1", "Long:Merk2", "Long:Merk3", "D", "Når", "K", "S", "Stopp", "Stopp2", "Stopp4", "Svart", "Syfest95"}),
+]
 
 
 @dataclass(frozen=True)
@@ -129,6 +209,40 @@ def _decode_aab_text(raw: bytes) -> str:
     return " ".join(raw.decode(AAB_ENCODING, errors="replace").split())
 
 
+def _raw_aab_text(raw: bytes) -> str:
+    return raw.split(b"\x00", 1)[0].decode(AAB_ENCODING, errors="replace").strip()
+
+
+def _format_aab_decimal(value: float) -> str:
+    if value == int(value):
+        return str(int(value))
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def _decode_aab_number(field: AabField, raw: bytes):
+    text = _raw_aab_text(raw)
+    compact = text.replace(" ", "")
+    if compact and all(ch.isalnum() or ch in {".", ",", "-", "+"} for ch in compact):
+        return text
+
+    if field.storage_length == 4:
+        if field.decimals:
+            value = struct.unpack("<f", raw[:4])[0]
+            return "" if abs(value) > 1e20 else _format_aab_decimal(value)
+        return str(struct.unpack("<i", raw[:4])[0])
+
+    if field.storage_length == 2:
+        return str(struct.unpack("<h", raw[:2])[0])
+
+    if field.storage_length == 8:
+        value = struct.unpack("<q", raw[:8])[0]
+        if field.decimals:
+            value = value / (10 ** field.decimals)
+        return _format_aab_decimal(float(value))
+
+    return _decode_aab_text(raw)
+
+
 def _parse_aab_layout(path: Path = AAB_CUSTOMER_TDF) -> list[AabField]:
     fields: list[AabField] = []
     pattern = re.compile(
@@ -160,6 +274,9 @@ def _parse_aab_layout(path: Path = AAB_CUSTOMER_TDF) -> list[AabField]:
 def _decode_aab_field(field: AabField, raw: bytes):
     if field.type_name == "Choice/Lookup":
         return raw[0] if raw else ""
+
+    if field.type_name in {"Number", "Number/Decimal"}:
+        return _decode_aab_number(field, raw)
 
     value = _decode_aab_text(raw)
     if value:
@@ -206,7 +323,35 @@ def _aab_customer_payload(row: dict) -> dict:
         "email": row.get("Mail_adresse", ""),
         "organizationNumber": row.get("Foretaknr", ""),
         "sellerNumber": row.get("Selgernr", ""),
+        "detailSections": _aab_detail_sections(row),
     }
+
+
+def _aab_group_for_field(name: str) -> str:
+    for title, fields in AAB_DETAIL_GROUPS:
+        if name in fields:
+            return title
+
+    if name.startswith(("Salg", "Selg")):
+        return "Salg"
+
+    return "Øvrige felt"
+
+
+def _aab_detail_sections(row: dict) -> list[dict]:
+    grouped: dict[str, list[dict]] = {title: [] for title, _ in AAB_DETAIL_GROUPS}
+    grouped["Øvrige felt"] = []
+
+    for name, value in row.items():
+        group = _aab_group_for_field(name)
+        grouped.setdefault(group, []).append({"label": name, "value": value})
+
+    sections = []
+    for title in [group_title for group_title, _ in AAB_DETAIL_GROUPS] + ["Øvrige felt"]:
+        fields = grouped.get(title, [])
+        if fields:
+            sections.append({"title": title, "fields": fields})
+    return sections
 
 
 def search_aab_customers(query: str) -> list[dict]:
@@ -694,6 +839,78 @@ HTML = """<!doctype html>
       line-height: 1.2;
       letter-spacing: 0;
     }
+    .customer-heading {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .customer-heading h2 {
+      margin-bottom: 0;
+    }
+    .detail-toggle {
+      margin-top: 16px;
+      border-top: 1px solid var(--line);
+      padding-top: 14px;
+    }
+    .detail-toggle summary {
+      display: inline-flex;
+      align-items: center;
+      min-height: 32px;
+      border: 1px solid var(--accent);
+      border-radius: 999px;
+      padding: 0 12px;
+      color: var(--accent);
+      background: var(--soft);
+      font-size: 0.88rem;
+      font-weight: 800;
+      cursor: pointer;
+      list-style: none;
+    }
+    .detail-toggle summary::-webkit-details-marker {
+      display: none;
+    }
+    .detail-toggle[open] summary {
+      background: var(--accent);
+      color: #fff;
+    }
+    .detail-sections {
+      display: grid;
+      gap: 18px;
+      margin-top: 16px;
+    }
+    .detail-section {
+      border-top: 1px solid var(--line);
+      padding-top: 14px;
+    }
+    .detail-section h3 {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 0.86rem;
+      font-weight: 900;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 18px;
+    }
+    .detail-item {
+      min-width: 0;
+    }
+    .detail-label {
+      display: block;
+      color: var(--muted);
+      font-size: 0.82rem;
+      font-weight: 800;
+    }
+    .detail-value {
+      display: block;
+      margin-top: 2px;
+      overflow-wrap: anywhere;
+    }
     dl {
       display: grid;
       grid-template-columns: 120px minmax(0, 1fr);
@@ -763,6 +980,8 @@ HTML = """<!doctype html>
       .search { grid-template-columns: 1fr; }
       .search button { width: 100%; }
       dl { grid-template-columns: 1fr; gap: 3px 0; }
+      .customer-heading { display: block; }
+      .detail-grid { grid-template-columns: 1fr; }
       dt { margin-top: 8px; }
     }
   </style>
@@ -944,6 +1163,31 @@ HTML = """<!doctype html>
       `;
     }
 
+    function renderAabDetailSections(sections) {
+      if (!sections?.length) return "";
+
+      return `
+        <details class="detail-toggle">
+          <summary>Se mer</summary>
+          <div class="detail-sections">
+            ${sections.map((section) => `
+              <section class="detail-section">
+                <h3>${escapeHtml(section.title)}</h3>
+                <div class="detail-grid">
+                  ${section.fields.map((field) => `
+                    <div class="detail-item">
+                      <span class="detail-label">${escapeHtml(field.label)}</span>
+                      <span class="detail-value">${escapeHtml(field.value ?? "-")}</span>
+                    </div>
+                  `).join("")}
+                </div>
+              </section>
+            `).join("")}
+          </div>
+        </details>
+      `;
+    }
+
     function renderAabCustomers(customers) {
       if (!customers.length) {
         aabCustomerResults.innerHTML = '<div class="empty">Ingen kunder funnet.</div>';
@@ -952,7 +1196,9 @@ HTML = """<!doctype html>
 
       aabCustomerResults.innerHTML = customers.map((customer) => `
         <article class="person">
-          <h2>${escapeHtml(customer.name || customer.customerNumber)}</h2>
+          <div class="customer-heading">
+            <h2>${escapeHtml(customer.name || customer.customerNumber)}</h2>
+          </div>
           <dl>
             <dt>Kundenr</dt><dd>${escapeHtml(customer.customerNumber)}</dd>
             <dt>Adresse</dt><dd>${escapeHtml(customer.address)}</dd>
@@ -964,6 +1210,7 @@ HTML = """<!doctype html>
             <dt>Foretaknr</dt><dd>${escapeHtml(customer.organizationNumber)}</dd>
             <dt>Selgernr</dt><dd>${escapeHtml(customer.sellerNumber)}</dd>
           </dl>
+          ${renderAabDetailSections(customer.detailSections)}
         </article>
       `).join("");
     }
