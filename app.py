@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import cgi
 import base64
+import html as html_lib
 import json
 import os
 import struct
@@ -20,6 +21,7 @@ from generate_dataease_dbm import parse_csv
 BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / "CUSTOMERS.DBM"
 PRODUCT_FILE = BASE_DIR / "PRODUKTER.DBM"
+HOWITWORK_FILE = BASE_DIR / "howitwork.md"
 IS_VERCEL = os.environ.get("VERCEL") == "1" or BASE_DIR == Path("/var/task")
 DEFAULT_OUTPUT_DIR = Path("/tmp/dataease_convertion") if IS_VERCEL else BASE_DIR
 HOST = "127.0.0.1"
@@ -295,6 +297,78 @@ def json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict | 
     handler.wfile.write(body)
 
 
+def html_response(handler: BaseHTTPRequestHandler, status: int, markup: str) -> None:
+    body = markup.encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", "text/html; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def howitwork_response(handler: BaseHTTPRequestHandler) -> None:
+    try:
+        markdown = HOWITWORK_FILE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        html_response(handler, 404, "<!doctype html><title>Ikke funnet</title><p>howitwork.md finnes ikke.</p>")
+        return
+
+    escaped = html_lib.escape(markdown)
+    html_response(
+        handler,
+        200,
+        f"""<!doctype html>
+<html lang="no">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How It Works</title>
+  <style>
+    :root {{
+      --bg: #f6f7f3;
+      --ink: #1f2623;
+      --line: #d6ddd5;
+      --accent: #116a5b;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+    }}
+    main {{
+      width: min(980px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 32px 0 56px;
+    }}
+    a {{
+      color: var(--accent);
+      font-weight: 800;
+      text-decoration: none;
+    }}
+    pre {{
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 20px;
+      white-space: pre-wrap;
+      line-height: 1.55;
+      font: 0.95rem ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <p><a href="/">Tilbake til appen</a></p>
+    <pre>{escaped}</pre>
+  </main>
+</body>
+</html>""",
+    )
+
+
 HTML = """<!doctype html>
 <html lang="no">
 <head>
@@ -331,11 +405,34 @@ HTML = """<!doctype html>
       background: #fff;
       padding: 28px 18px;
     }
-    .brand {
+    .brand-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
       margin: 0 0 24px;
+    }
+    .brand {
+      margin: 0;
       font-size: 1.05rem;
       font-weight: 800;
       letter-spacing: 0;
+    }
+    .help-badge {
+      display: inline-grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      border: 1px solid var(--accent);
+      border-radius: 999px;
+      color: var(--accent);
+      background: var(--soft);
+      font-weight: 900;
+      text-decoration: none;
+    }
+    .help-badge:hover {
+      background: var(--accent);
+      color: #fff;
     }
     .menu {
       display: grid;
@@ -525,7 +622,7 @@ HTML = """<!doctype html>
         border-bottom: 1px solid var(--line);
         padding: 16px;
       }
-      .brand { margin-bottom: 12px; }
+      .brand-row { margin-bottom: 12px; }
       .menu { grid-template-columns: 1fr 1fr; }
       .menu-button { text-align: center; }
       main { padding: 28px 0; }
@@ -544,7 +641,10 @@ HTML = """<!doctype html>
 <body>
   <div class="app">
     <aside class="sidebar">
-      <p class="brand">DataEase</p>
+      <div class="brand-row">
+        <p class="brand">DataEase</p>
+        <a class="help-badge" href="/howitwork" title="Vis howitwork.md" aria-label="Vis howitwork.md">?</a>
+      </div>
       <nav class="menu" aria-label="Hovedmeny">
         <button class="menu-button active" type="button" data-view="search-view">Person-Søk</button>
         <button class="menu-button" type="button" data-view="list-view">Liste over personer</button>
@@ -929,12 +1029,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/":
-            body = HTML.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            html_response(self, 200, HTML)
+            return
+
+        if parsed.path == "/howitwork":
+            howitwork_response(self)
             return
 
         if parsed.path == "/api/search":
