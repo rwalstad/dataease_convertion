@@ -197,3 +197,427 @@ Alle API-svar returneres som JSON via `json_response()`.
 6. Decode hvert felt basert paa typekode.
 7. Returner en liste med dictionaries.
 8. Returner radene som generiske dictionaries for UI/API.
+
+## Filtolkerens oppbygning
+
+Koden under er selve filtolkeren trukket ut fra appen. Den inneholder ikke web-UI,
+opplasting, API-endepunkter eller CSV-konvertering. Kunden kan bruke denne delen som
+en ren decoder i egen dataflyt:
+
+```python
+from __future__ import annotations
+
+import math
+import re
+import struct
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass(frozen=True)
+class Field:
+    name: str
+    type_code: int
+    length: int
+    decimals: int
+    flags: int
+
+
+@dataclass(frozen=True)
+class ReversedLayout:
+    record_size: int
+    fields: list["ReversedField"]
+
+
+@dataclass(frozen=True)
+class ReversedField:
+    name: str
+    type_name: str
+    storage_length: int
+    decimals: int
+    offset: int
+
+
+TYPE_NAMES = {
+    0x01: "Text",
+    0x02: "Number",
+    0x03: "Number/Decimal",
+    0x04: "Date",
+    0x08: "Choice/Lookup",
+}
+
+DBA_DESCRIPTOR_START = 0x28
+DBA_DESCRIPTOR_SIZE = 16
+DOS_FIXED_FIELD_COUNT = 253
+DOS_FIXED_NAME_LIST_START = 4861
+DOS_FIXED_RECORD_SIZE = 1000
+
+
+def _decode_fixed_text(raw: bytes) -> str:
+    return raw.split(b"\x00", 1)[0].decode("latin-1", errors="replace").strip()
+
+
+def _decode_field(field: Field, raw: bytes):
+    if field.type_code == 0x01:
+        return _decode_fixed_text(raw)
+    if field.type_code == 0x02:
+        return struct.unpack("<i", raw[:4])[0]
+    if field.type_code == 0x03:
+        return _decode_fixed_text(raw)
+    if field.type_code in {0x04, 0x05}:
+        return _decode_fixed_text(raw)
+    if field.type_code == 0x06:
+        return struct.unpack("<d", raw[:8])[0]
+    if field.type_code == 0x07:
+        return struct.unpack("<q", raw[:8])[0] / 100
+    if field.type_code == 0x08:
+        return bool(raw and raw[0])
+    return raw.hex()
+
+
+def _decode_dos_text(raw: bytes) -> str:
+    raw = raw.split(b"\x00", 1)[0].rstrip(b"\x00 ")
+    return " ".join(raw.decode("cp865", errors="replace").split())
+
+
+def _raw_dos_text(raw: bytes) -> str:
+    return raw.split(b"\x00", 1)[0].decode("cp865", errors="replace").strip()
+
+
+def _format_decimal(value: float) -> str:
+    if not math.isfinite(value):
+        return ""
+    if value == int(value):
+        return str(int(value))
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def _decode_reversed_number(field: ReversedField, raw: bytes):
+    text = _raw_dos_text(raw)
+    compact = text.replace(" ", "")
+    if compact and all(ch.isalnum() or ch in {".", ",", "-", "+"} for ch in compact):
+        return text
+
+    if field.storage_length == 4:
+        if field.decimals:
+            value = struct.unpack("<f", raw[:4])[0]
+            return "" if not math.isfinite(value) or abs(value) > 1e20 else _format_decimal(value)
+        return str(struct.unpack("<i", raw[:4])[0])
+
+    if field.storage_length == 2:
+        return str(struct.unpack("<h", raw[:2])[0])
+
+    if field.storage_length == 8:
+        value = struct.unpack("<q", raw[:8])[0]
+        if field.decimals:
+            value = value / (10 ** field.decimals)
+        return _format_decimal(float(value))
+
+    return _decode_dos_text(raw)
+
+
+def _decode_reversed_field(field: ReversedField, raw: bytes):
+    if field.type_name == "Choice/Lookup":
+        return raw[0] if raw else ""
+
+    if field.type_name in {"Number", "Number/Decimal"}:
+        return _decode_reversed_number(field, raw)
+
+    value = _decode_dos_text(raw)
+    if value:
+        return value
+
+    if any(raw):
+        return raw.hex()
+    return ""
+
+
+def _parse_reversed_tdf(path: Path) -> ReversedLayout:
+    record_size = 0
+    fields: list[ReversedField] = []
+    field_pattern = re.compile(
+        r"^\s*\d+\s+(?P<name>.{25})\s+"
+        r"(?P<type>.{16})\s+"
+        r"\d+\s+(?P<storage>\d+)\s+(?P<decimals>\d+)\s+"
+        r"(?P<offset>\d+)\s+(?P<stored>yes|no)\b"
+    )
+
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("RECORD_SIZE:"):
+            match = re.search(r"(\d+)", line)
+            if match:
+                record_size = int(match.group(1))
+            continue
+
+        match = field_pattern.match(line)
+        if not match or match.group("stored") != "yes":
+            continue
+
+        fields.append(
+            ReversedField(
+                name=match.group("name").strip(),
+                type_name=match.group("type").strip(),
+                storage_length=int(match.group("storage")),
+                decimals=int(match.group("decimals")),
+                offset=int(match.group("offset")),
+            )
+        )
+
+    if not record_size:
+        raise ValueError("TDF-filen mangler RECORD_SIZE.")
+    if not fields:
+        raise ValueError("Fant ingen lagrede felt i TDF-filen.")
+
+    return ReversedLayout(record_size=record_size, fields=fields)
+
+
+def _is_plausible_dba_name(value: str) -> bool:
+    if not value or len(value) > 40:
+        return False
+    return all((ord(ch) >= 32 and ch != "\x7f") for ch in value)
+
+
+def _read_dba_names(data: bytes, field_count: int, search_start: int) -> list[str]:
+    best: list[str] = []
+    for start in range(search_start, min(len(data), search_start + 4096)):
+        names: list[str] = []
+        position = start
+        while position < len(data) and len(names) < field_count:
+            end = data.find(b"\x00", position)
+            if end < 0:
+                break
+
+            name = data[position:end].decode("cp865", errors="replace")
+            if not _is_plausible_dba_name(name):
+                break
+
+            names.append(name)
+            position = end + 1
+
+        if len(names) > len(best):
+            best = names
+        if len(names) == field_count:
+            return names
+
+    if not best:
+        raise ValueError("Fant ikke feltnavn i DBA-filen.")
+    return best
+
+
+def _read_dba_names_at(data: bytes, field_count: int, start: int) -> list[str]:
+    names: list[str] = []
+    position = start
+    while position < len(data) and len(names) < field_count:
+        end = data.find(b"\x00", position)
+        if end < 0:
+            break
+        name = data[position:end].decode("cp865", errors="replace")
+        if not _is_plausible_dba_name(name):
+            break
+        names.append(name)
+        position = end + 1
+    return names
+
+
+def _parse_fixed_dos_dba_layout(data: bytes, dbm_size: int) -> ReversedLayout | None:
+    if dbm_size % DOS_FIXED_RECORD_SIZE != 0:
+        return None
+
+    names = _read_dba_names_at(data, DOS_FIXED_FIELD_COUNT, DOS_FIXED_NAME_LIST_START)
+    if len(names) != DOS_FIXED_FIELD_COUNT:
+        return None
+
+    fields: list[ReversedField] = []
+    for index, name in enumerate(names):
+        position = DBA_DESCRIPTOR_START + index * DBA_DESCRIPTOR_SIZE
+        descriptor = data[position : position + DBA_DESCRIPTOR_SIZE]
+        if len(descriptor) != DBA_DESCRIPTOR_SIZE:
+            return None
+
+        storage_length = descriptor[7]
+        offset = descriptor[9] + (descriptor[10] << 8)
+        if offset < DOS_FIXED_RECORD_SIZE and offset + storage_length <= DOS_FIXED_RECORD_SIZE:
+            fields.append(
+                ReversedField(
+                    name=name,
+                    type_name=TYPE_NAMES.get(descriptor[2], f"Unknown(0x{descriptor[2]:02X})"),
+                    storage_length=storage_length,
+                    decimals=descriptor[4],
+                    offset=offset,
+                )
+            )
+
+    if not fields:
+        return None
+    return ReversedLayout(record_size=DOS_FIXED_RECORD_SIZE, fields=fields)
+
+
+def _parse_dba_layout(path: Path, dbm_size: int) -> ReversedLayout:
+    data = path.read_bytes()
+    fixed_layout = _parse_fixed_dos_dba_layout(data, dbm_size)
+    if fixed_layout is not None:
+        return fixed_layout
+
+    descriptors: list[bytes] = []
+
+    for index in range(1024):
+        position = DBA_DESCRIPTOR_START + index * DBA_DESCRIPTOR_SIZE
+        descriptor = data[position : position + DBA_DESCRIPTOR_SIZE]
+        if len(descriptor) != DBA_DESCRIPTOR_SIZE:
+            break
+
+        type_code = descriptor[2]
+        display_length = descriptor[3]
+        storage_length = descriptor[7]
+        offset = descriptor[9] + (descriptor[10] << 8)
+        if (
+            type_code not in TYPE_NAMES
+            or display_length == 0
+            or display_length > 100
+            or storage_length > 100
+            or offset > 10000
+        ):
+            break
+
+        descriptors.append(descriptor)
+
+    if not descriptors:
+        raise ValueError("Fant ingen feltbeskrivelser i DBA-filen.")
+
+    names_start = DBA_DESCRIPTOR_START + len(descriptors) * DBA_DESCRIPTOR_SIZE
+    names = _read_dba_names(data, len(descriptors), names_start)
+    if len(names) < len(descriptors):
+        descriptors = descriptors[: len(names)]
+
+    raw_fields: list[ReversedField] = []
+    max_stored_end = 0
+    for name, descriptor in zip(names, descriptors):
+        storage_length = descriptor[7]
+        offset = descriptor[9] + (descriptor[10] << 8)
+        raw_fields.append(
+            ReversedField(
+                name=name,
+                type_name=TYPE_NAMES.get(descriptor[2], f"Unknown(0x{descriptor[2]:02X})"),
+                storage_length=storage_length,
+                decimals=descriptor[4],
+                offset=offset,
+            )
+        )
+        if storage_length:
+            max_stored_end = max(max_stored_end, offset + storage_length)
+
+    if not max_stored_end:
+        raise ValueError("DBA-filen beskriver ingen lagrede DBM-felt.")
+
+    record_size = max_stored_end
+    for candidate in range(max_stored_end, max_stored_end + 4096):
+        if dbm_size % candidate == 0:
+            record_size = candidate
+            break
+
+    fields = [
+        field
+        for field in raw_fields
+        if field.storage_length and field.offset + field.storage_length <= record_size
+    ]
+    if not fields:
+        raise ValueError("Fant ingen felt i DBA-filen som peker inn i DBM-recorden.")
+
+    return ReversedLayout(record_size=record_size, fields=fields)
+
+
+def _read_layout_records(dbm_path: Path, schema_path: Path) -> list[dict]:
+    if schema_path.suffix.casefold() == ".dba":
+        layout = _parse_dba_layout(schema_path, dbm_path.stat().st_size)
+    else:
+        layout = _parse_reversed_tdf(schema_path)
+    data = dbm_path.read_bytes()
+    records: list[dict] = []
+
+    for position in range(0, len(data), layout.record_size):
+        record = data[position : position + layout.record_size]
+        if len(record) != layout.record_size:
+            continue
+
+        row = {}
+        for field in layout.fields:
+            raw = record[field.offset : field.offset + field.storage_length]
+            row[field.name] = _decode_reversed_field(field, raw)
+        records.append(row)
+
+    return records
+
+
+def read_dataease_records(path: Path, schema_path: Path | None = None) -> list[dict]:
+    """Read a DataEase DBM file and return one dictionary per active record.
+
+    `schema_path` is required for old DOS DBM files without the DEFW signature.
+    The schema file is normally a matching .DBA file. A reversed .TDF file is
+    also supported for compatibility with the reverse-engineering helper.
+    """
+    data = path.read_bytes()
+    if len(data) < 128:
+        if schema_path:
+            return _read_layout_records(path, schema_path)
+        raise ValueError("DBM-filen er for kort til å inneholde en gyldig header.")
+
+    if data[:4] != b"DEFW":
+        if schema_path:
+            return _read_layout_records(path, schema_path)
+        raise ValueError("DBM-filen mangler DEFW-signatur. Send med tilhørende DBA/TDF.")
+
+    field_count = struct.unpack_from("<H", data, 6)[0]
+    record_count = struct.unpack_from("<I", data, 8)[0]
+    header_size = struct.unpack_from("<H", data, 12)[0]
+    record_size = struct.unpack_from("<H", data, 14)[0]
+
+    fields: list[Field] = []
+    offset = 128
+    for _ in range(field_count):
+        descriptor = data[offset : offset + 64]
+        fields.append(
+            Field(
+                name=_decode_fixed_text(descriptor[0:20]),
+                type_code=descriptor[20],
+                flags=descriptor[21],
+                length=struct.unpack_from("<H", descriptor, 22)[0],
+                decimals=descriptor[24],
+            )
+        )
+        offset += 64
+
+    records: list[dict] = []
+    for index in range(record_count):
+        record_offset = header_size + index * record_size
+        record = data[record_offset : record_offset + record_size]
+        if len(record) < record_size or record[0] == 0x2A:
+            continue
+
+        row = {}
+        cursor = 1
+        for field in fields:
+            raw = record[cursor : cursor + field.length]
+            row[field.name] = _decode_field(field, raw)
+            cursor += field.length
+        records.append(row)
+
+    return records
+```
+
+Bruk i kundens dataflyt kan holdes så enkelt:
+
+```python
+from pathlib import Path
+
+records = read_dataease_records(
+    Path("KUNDER.DBM"),
+    Path("KUNDER.DBA"),  # brukes for gamle DOS-filer uten DEFW-header
+)
+
+for row in records:
+    print(row)
+```
+
+Returverdien er en liste med dictionaries. Hver dictionary representerer én rad i
+DBM-filen, og nøklene er feltnavnene som er lest fra `DEFW`-headeren eller fra
+tilhørende `.DBA`/`.TDF`.
