@@ -1130,7 +1130,7 @@ HTML = """<!doctype html>
       </nav>
     </aside>
     <main>
-      <div class="data-source">Current data is from files: CUSTOMERS.DBM / PRODUKTER.DBM</div>
+      
       <section class="view active" id="search-view">
         <h1>Personsøk</h1>
         <p class="lede">Skriv inn fornavn og etternavn for å hente kontaktinformasjon fra DataEase-filen.</p>
