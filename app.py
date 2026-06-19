@@ -1125,11 +1125,6 @@ HTML = """<!doctype html>
         <a class="help-badge" href="/howitwork" title="Vis howitwork.md" aria-label="Vis howitwork.md">?</a>
       </div>
       <nav class="menu" aria-label="Hovedmeny">
-        <button class="menu-button active" type="button" data-view="search-view">Person-Søk</button>
-        <button class="menu-button" type="button" data-view="aab-customer-search-view">Kundesøk AAB</button>
-        <button class="menu-button" type="button" data-view="list-view">Liste over personer</button>
-        <button class="menu-button" type="button" data-view="product-search-view">Produkt-Søk</button>
-        <button class="menu-button" type="button" data-view="product-list-view">Liste over produkter</button>
         <button class="menu-button" type="button" data-view="generic-file-search-view">Generisk fil tolker</button>
         <button class="menu-button" type="button" data-view="csv-convert-view">Konvertering av CSV</button>
       </nav>
