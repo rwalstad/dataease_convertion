@@ -4,10 +4,10 @@ Denne filen beskriver hvordan `app.py` tolker DataEase-lignende `.DBM`-filer for
 
 ## Hovedfiler
 
-- `CUSTOMERS.DBM` leses som person-/kundetabell.
-- `PRODUKTER.DBM` leses som produkttabell.
-- `CUSTOMERS.TDF` og `PRODUKTER.TDF` er menneskelesbare beskrivelser av tabellstrukturene.
 - `app.py` inneholder selve leseren i funksjonen `read_dataease_records()`.
+- Den generiske filtolkeren bruker opplastede `.DBM`-filer i stedet for faste person- og produkttabeller i menyen.
+- Eldre `.DBM`-filer uten `DEFW`-header tolkes ved hjelp av en `.DBA`-definisjonsfil med samme filnavn.
+- `CUSTOMERS.TDF` og `PRODUKTER.TDF` er eksempler paa menneskelesbare beskrivelser av tabellstrukturer.
 
 ## Filformatet som forventes
 
@@ -25,7 +25,32 @@ De viktigste header-feltene er:
 
 Tallene leses som little-endian med Python-modulen `struct`.
 
-Hvis filen er kortere enn 128 bytes, eller ikke starter med signaturen `DEFW`, stopper parseren med en feilmelding.
+Hvis filen starter med `DEFW`, brukes denne headeren direkte. Hvis signaturen mangler, forventer parseren en sidefil med tabell-layout. For gamle DataEase-tabeller er dette normalt `.DBA`, ikke `.TDF`.
+
+## Eldre DBM uten DEFW
+
+For DOS-/eldre DataEase-filer ligger feltnavn og record-layout ikke i `.DBM`-filen. Da bruker appen en definisjonsfil med samme basenavn:
+
+```text
+KUNDER.DBM
+KUNDER.DBA
+```
+
+Ved mappevalg finner UI-et automatisk `.DBA` i samme mappe og sender den med til API-et. Ved enkeltfilvalg kan DBM og DBA velges samtidig i samme fil-dialog; da matcher UI-et `.DBA` med samme basenavn automatisk. Nettlesere tillater ikke at appen leser en søskenfil fra disken etter at bare én enkelt DBM-fil er valgt, så enten mappevalg eller samtidig valg av DBM + DBA maa brukes.
+
+DBA-parseren gjør dette:
+
+1. Leser 16-byte feltbeskrivelser fra offset `0x28`.
+2. Leser typekode, visningslengde, lagringslengde, desimaler og offset i DBM-recorden.
+3. Finner null-separerte feltnavn senere i DBA-filen.
+4. Beregner record-storrelse fra felt-offsetene og DBM-filstorrelsen.
+5. Leser hver record etter offset/lengde fra DBA-layouten.
+
+For DataEase DOS-layouten som ble validert mot KUNDOAAB, prøver parseren først den samme konservative layouten som den tidligere statiske løsningen brukte: 253 feltbeskrivelser fra offset `0x28`, navneliste fra offset `4861`, og 1000 bytes per record. Dette brukes bare når DBM-storrelsen passer med 1000-byte records og DBA-filen har forventet navneliste. Hvis dette ikke passer, faller parseren tilbake til generisk DBA-heuristikk.
+
+Tekst i gamle DOS-/DataEase-filer dekodes med `cp865`. Det er en gammel DOS-tegnkode som ble brukt på norske og danske systemer. Dette gjør at byteverdier fra de gamle filene blir vist som riktige norske tegn, for eksempel `æ`, `ø`, `å`, `Æ`, `Ø` og `Å`. Hvis samme bytes tolkes som UTF-8 eller latin-1, kan norske tegn bli feil eller vises som rare symboler.
+
+Appen kan også lese en tidligere reversert `.TDF` med `RECORD_SIZE` og feltlinjer i formatet som `reverse_kundoaab_layout.py` laget. Dette er kun en kompatibilitetsvei; de originale 2003-tabellene forventes aa bruke `.DBA`.
 
 ## Feltbeskrivelser
 
@@ -123,86 +148,38 @@ Det betyr:
 - Bruk latin-1, siden norske tegn kan ligge direkte i byteverdiene.
 - Fjern whitespace rundt teksten.
 
-## Persondata
+## Generisk filsok
 
-Persondata bruker standardfilen:
+`read_uploaded_database(file_item, schema_file_item)` lagrer den opplastede DBM-filen og eventuell DBA/TDF-fil midlertidig, sender filstiene til `read_dataease_records()`, og sletter tempfilene etter tolking.
 
-```python
-DATA_FILE = BASE_DIR / "CUSTOMERS.DBM"
-```
+`search_uploaded_database(file_item, query)` normaliserer søkeordet med `_normalize()` og søker i alle verdier i hver rad.
 
-`list_people()` leser alle records fra `CUSTOMERS.DBM` og mapper DataEase-feltene til JSON-felt for UI-et:
+Resultatet inneholder:
 
-| DataEase-felt | JSON/UI-felt |
-| --- | --- |
-| `CUSTOMER_ID` | `id` |
-| `FIRST_NAME` + `LAST_NAME` | `name` |
-| `ADDRESS` | `address` |
-| `CITY` | `city` |
-| `PHONE` | `phone` |
-| `EMAIL` | `email` |
-| `CREATED_DATE` | `createdDate` |
+- filnavn
+- feltnavn
+- antall records
+- antall treff
+- inntil 100 viste treff
 
-`search_people(query)` lager et søkbart fullt navn av `FIRST_NAME` og `LAST_NAME`.
-
-Søk normaliseres med `_normalize()`:
-
-- Unicode normaliseres.
-- Aksenter/diakritiske tegn fjernes.
-- Tekst casefoldes.
-- Ekstra mellomrom fjernes.
-
-Derfor kan søk fungere mer tolerant paa navn.
-
-## Produktdata
-
-Produktdata bruker:
-
-```python
-PRODUCT_FILE = BASE_DIR / "PRODUKTER.DBM"
-```
-
-`list_products()` leser alle records fra `PRODUKTER.DBM`.
-
-Hver rad sendes gjennom `_product_payload()`, som mapper feltene slik:
-
-| DataEase-felt | JSON/UI-felt |
-| --- | --- |
-| `PRODUKT_ID` | `id` |
-| `NAVN` | `name` |
-| `VARENUMMER` | `itemNumber` |
-| `ENHETSPRIS` | `unitPrice` og `unitPriceDisplay` |
-| `KOSTPRIS` | `costPrice` og `costPriceDisplay` |
-| `MVA_TYPE` | `vatType` |
-| `INNTEKTSKONTO` | `incomeAccount` |
-
-Priser formatteres i `_format_price()` til to desimaler for visning.
-
-`search_products(query)` søker i:
-
-- `NAVN`
-- `VARENUMMER`
-- `MVA_TYPE`
-- `INNTEKTSKONTO`
-
-Søket bruker samme `_normalize()`-logikk som personsøket.
+`list_uploaded_database(file_item)` returnerer alle records og feltnavn slik at UI-et kan vise tabellen og lage CSV-nedlasting.
 
 ## API-endepunkter
 
-`Handler.do_GET()` eksponerer dataene slik:
+`Handler` eksponerer dataene slik:
 
 | URL | Funksjon |
 | --- | --- |
-| `/api/records` | Returnerer alle personer fra `CUSTOMERS.DBM`. |
-| `/api/search?name=...` | Søker i personnavn. |
-| `/api/products` | Returnerer alle produkter fra `PRODUKTER.DBM`. |
-| `/api/products/search?query=...` | Søker i produktfeltene. |
+| `/api/generic-file/search` | Søker i en opplastet `.DBM`-fil. |
+| `/api/generic-file/list` | Returnerer alle records fra en opplastet `.DBM`-fil. |
+
+| `/api/convert-csv` | Konverterer CSV til DataEase DBM/TDF. |
 
 Alle API-svar returneres som JSON via `json_response()`.
 
 ## Viktige begrensninger
 
-- Parseren forutsetter signaturen `DEFW`.
+- DBM uten `DEFW` maa ha en tilhørende `.DBA` eller reversert `.TDF`.
 - Feltbeskrivelser maa ligge rett etter 128-byte headeren.
 - Hver field descriptor maa vaere 64 bytes.
 - Record-data maa ligge fra `header_size`.
@@ -213,12 +190,10 @@ Alle API-svar returneres som JSON via `json_response()`.
 ## Kort flyt
 
 1. Les hele `.DBM`-filen som bytes.
-2. Valider `DEFW`-signatur.
-3. Les `field_count`, `record_count`, `header_size` og `record_size`.
-4. Les `field_count` feltbeskrivelser, 64 bytes per felt.
-5. Gaa gjennom hver record fra `header_size`.
-6. Hopp over slettede records.
-7. Del recorden opp etter feltlengdene.
-8. Decode hvert felt basert paa typekode.
-9. Returner en liste med dictionaries.
-10. Mapper radene til person- eller produktformat for UI/API.
+2. Hvis `DEFW` finnes: les `field_count`, `record_count`, `header_size` og `record_size`.
+3. Hvis `DEFW` mangler: les layout fra tilhørende `.DBA` eller reversert `.TDF`.
+4. Gaa gjennom hver record.
+5. Del recorden opp etter feltlengde og offset.
+6. Decode hvert felt basert paa typekode.
+7. Returner en liste med dictionaries.
+8. Returner radene som generiske dictionaries for UI/API.

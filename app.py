@@ -4,6 +4,7 @@ import cgi
 import base64
 import html as html_lib
 import json
+import math
 import os
 import re
 import struct
@@ -20,97 +21,14 @@ from generate_dataease_dbm import parse_csv
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_FILE = BASE_DIR / "CUSTOMERS.DBM"
-PRODUCT_FILE = BASE_DIR / "PRODUKTER.DBM"
-AAB_CUSTOMER_FILE = BASE_DIR / "KUNDOAAB.DBM"
-AAB_CUSTOMER_TDF = BASE_DIR / "KUNDOAAB_REVERSED.TDF"
 HOWITWORK_FILE = BASE_DIR / "howitwork.md"
+KUNDOAAB_DBM_FILE = BASE_DIR / "KUNDOAAB.DBM"
+KUNDOAAB_DBA_FILE = BASE_DIR / "KUNDOAAB.DBA"
 IS_VERCEL = os.environ.get("VERCEL") == "1" or BASE_DIR == Path("/var/task")
 DEFAULT_OUTPUT_DIR = Path("/tmp/dataease_convertion") if IS_VERCEL else BASE_DIR
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("PORT", "8000"))
-AAB_RECORD_SIZE = 1000
-AAB_ENCODING = "cp865"
-AAB_DETAIL_PRIMARY_FIELDS = {
-    "Kundenr",
-    "Navn",
-    "Telefon",
-    "Telefax",
-    "Adresse",
-    "Postnr",
-    "Poststed",
-    "Kontaktperson",
-    "Mail_adresse",
-    "Foretaknr",
-    "Selgernr",
-}
-AAB_DETAIL_GROUPS = [
-    (
-        "Kunde og kontakt",
-        {
-            "Dato",
-            "Firmanr",
-            "Kundenr",
-            "Firmanummer",
-            "Navn",
-            "Navn1",
-            "Telefon",
-            "Telefax",
-            "Adresse",
-            "Postnr",
-            "Poststed",
-            "Språkkode",
-            "Foretaknr",
-            "Kontaktperson",
-            "Mail_adresse",
-            "Regdato",
-        },
-    ),
-    (
-        "Klassifisering og kjeder",
-        {
-            "Gruppe",
-            "Kundegruppe",
-            "Distr",
-            "Opphav",
-            "Kategori",
-            "Selgernr",
-            "Mettler",
-            "Kjedenr",
-            "Kjedebet",
-            "Mettlerår",
-            "Selskapnr",
-            "Faktkjede",
-            "Fakturakjedenr",
-            "Pristype",
-            "Sytråd",
-            "Antmønster",
-        },
-    ),
-    (
-        "Betaling og faktura",
-        {
-            "Bankgiro",
-            "Valuta",
-            "Dropp",
-            "Giro_Rabatt",
-            "Utpris",
-            "Oppkrav",
-            "Factoring",
-            "Inkasso",
-            "Eksport",
-            "Bgbeløp",
-            "EDI_Faktura",
-            "OverfComp",
-        },
-    ),
-    ("Bonus og rabatter", {"Faktrab", "Kontrab", "Bonus", "Bonusgrl", "Bonusgrl2", "Bonusgrl3", "Bonusgrl4", "Bonusgrl5"}),
-    ("Salg", set()),
-    ("Netto og brutto", {"Netto", "Netto_S", "Netto2", "Netto_S2", "Netto3", "Netto4", "Netto5", "Brutto", "Brutto2", "Brutto3", "Brutto4", "Brutto5"}),
-    ("Dekningsbidrag", {"Dekningsbidrag", "Dekningsbidrag2", "Dekningsbidrag3", "Dekningsbidrag4", "Dekningsbidrag5"}),
-    ("EAN/VAT", {"VATnr", "EAN_Loknr"}),
-    ("Merknader og status", {"Long:Merk1", "Long:Merk2", "Long:Merk3", "D", "Når", "K", "S", "Stopp", "Stopp2", "Stopp4", "Svart", "Syfest95"}),
-]
+MAX_DISPLAY_FIELDS = 10
 
 
 @dataclass(frozen=True)
@@ -123,7 +41,13 @@ class Field:
 
 
 @dataclass(frozen=True)
-class AabField:
+class ReversedLayout:
+    record_size: int
+    fields: list["ReversedField"]
+
+
+@dataclass(frozen=True)
+class ReversedField:
     name: str
     type_name: str
     storage_length: int
@@ -159,12 +83,331 @@ def _decode_field(field: Field, raw: bytes):
     return raw.hex()
 
 
-def read_dataease_records(path: Path = DATA_FILE) -> list[dict]:
+def _decode_dos_text(raw: bytes) -> str:
+    raw = raw.split(b"\x00", 1)[0].rstrip(b"\x00 ")
+    return " ".join(raw.decode("cp865", errors="replace").split())
+
+
+def _raw_dos_text(raw: bytes) -> str:
+    return raw.split(b"\x00", 1)[0].decode("cp865", errors="replace").strip()
+
+
+def _format_decimal(value: float) -> str:
+    if not math.isfinite(value):
+        return ""
+    if value == int(value):
+        return str(int(value))
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def _decode_reversed_number(field: ReversedField, raw: bytes):
+    text = _raw_dos_text(raw)
+    compact = text.replace(" ", "")
+    if compact and all(ch.isalnum() or ch in {".", ",", "-", "+"} for ch in compact):
+        return text
+
+    if field.storage_length == 4:
+        if field.decimals:
+            value = struct.unpack("<f", raw[:4])[0]
+            return "" if not math.isfinite(value) or abs(value) > 1e20 else _format_decimal(value)
+        return str(struct.unpack("<i", raw[:4])[0])
+
+    if field.storage_length == 2:
+        return str(struct.unpack("<h", raw[:2])[0])
+
+    if field.storage_length == 8:
+        value = struct.unpack("<q", raw[:8])[0]
+        if field.decimals:
+            value = value / (10 ** field.decimals)
+        return _format_decimal(float(value))
+
+    return _decode_dos_text(raw)
+
+
+def _decode_reversed_field(field: ReversedField, raw: bytes):
+    if field.type_name == "Choice/Lookup":
+        return raw[0] if raw else ""
+
+    if field.type_name in {"Number", "Number/Decimal"}:
+        return _decode_reversed_number(field, raw)
+
+    value = _decode_dos_text(raw)
+    if value:
+        return value
+
+    if any(raw):
+        return raw.hex()
+    return ""
+
+
+TYPE_NAMES = {
+    0x01: "Text",
+    0x02: "Number",
+    0x03: "Number/Decimal",
+    0x04: "Date",
+    0x08: "Choice/Lookup",
+}
+DBA_DESCRIPTOR_START = 0x28
+DBA_DESCRIPTOR_SIZE = 16
+DOS_FIXED_FIELD_COUNT = 253
+DOS_FIXED_NAME_LIST_START = 4861
+DOS_FIXED_RECORD_SIZE = 1000
+
+
+def _parse_reversed_tdf(path: Path) -> ReversedLayout:
+    record_size = 0
+    fields: list[ReversedField] = []
+    field_pattern = re.compile(
+        r"^\s*\d+\s+(?P<name>.{25})\s+"
+        r"(?P<type>.{16})\s+"
+        r"\d+\s+(?P<storage>\d+)\s+(?P<decimals>\d+)\s+"
+        r"(?P<offset>\d+)\s+(?P<stored>yes|no)\b"
+    )
+
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("RECORD_SIZE:"):
+            match = re.search(r"(\d+)", line)
+            if match:
+                record_size = int(match.group(1))
+            continue
+
+        match = field_pattern.match(line)
+        if not match or match.group("stored") != "yes":
+            continue
+
+        fields.append(
+            ReversedField(
+                name=match.group("name").strip(),
+                type_name=match.group("type").strip(),
+                storage_length=int(match.group("storage")),
+                decimals=int(match.group("decimals")),
+                offset=int(match.group("offset")),
+            )
+        )
+
+    if not record_size:
+        raise ValueError("TDF-filen mangler RECORD_SIZE.")
+    if not fields:
+        raise ValueError("Fant ingen lagrede felt i TDF-filen.")
+
+    return ReversedLayout(record_size=record_size, fields=fields)
+
+
+def _is_plausible_dba_name(value: str) -> bool:
+    if not value or len(value) > 40:
+        return False
+    return all((ord(ch) >= 32 and ch != "\x7f") for ch in value)
+
+
+def _read_dba_names(data: bytes, field_count: int, search_start: int) -> list[str]:
+    best: list[str] = []
+    for start in range(search_start, min(len(data), search_start + 4096)):
+        names: list[str] = []
+        position = start
+        while position < len(data) and len(names) < field_count:
+            end = data.find(b"\x00", position)
+            if end < 0:
+                break
+
+            name = data[position:end].decode("cp865", errors="replace")
+            if not _is_plausible_dba_name(name):
+                break
+
+            names.append(name)
+            position = end + 1
+
+        if len(names) > len(best):
+            best = names
+        if len(names) == field_count:
+            return names
+
+    if not best:
+        raise ValueError("Fant ikke feltnavn i DBA-filen.")
+    return best
+
+
+def _read_dba_names_at(data: bytes, field_count: int, start: int) -> list[str]:
+    names: list[str] = []
+    position = start
+    while position < len(data) and len(names) < field_count:
+        end = data.find(b"\x00", position)
+        if end < 0:
+            break
+        name = data[position:end].decode("cp865", errors="replace")
+        if not _is_plausible_dba_name(name):
+            break
+        names.append(name)
+        position = end + 1
+    return names
+
+
+def _parse_fixed_dos_dba_layout(data: bytes, dbm_size: int) -> ReversedLayout | None:
+    if dbm_size % DOS_FIXED_RECORD_SIZE != 0:
+        return None
+
+    names = _read_dba_names_at(data, DOS_FIXED_FIELD_COUNT, DOS_FIXED_NAME_LIST_START)
+    if len(names) != DOS_FIXED_FIELD_COUNT:
+        return None
+
+    fields: list[ReversedField] = []
+    for index, name in enumerate(names):
+        position = DBA_DESCRIPTOR_START + index * DBA_DESCRIPTOR_SIZE
+        descriptor = data[position : position + DBA_DESCRIPTOR_SIZE]
+        if len(descriptor) != DBA_DESCRIPTOR_SIZE:
+            return None
+
+        storage_length = descriptor[7]
+        offset = descriptor[9] + (descriptor[10] << 8)
+        if offset < DOS_FIXED_RECORD_SIZE and offset + storage_length <= DOS_FIXED_RECORD_SIZE:
+            fields.append(
+                ReversedField(
+                    name=name,
+                    type_name=TYPE_NAMES.get(descriptor[2], f"Unknown(0x{descriptor[2]:02X})"),
+                    storage_length=storage_length,
+                    decimals=descriptor[4],
+                    offset=offset,
+                )
+            )
+
+    if not fields:
+        return None
+    return ReversedLayout(record_size=DOS_FIXED_RECORD_SIZE, fields=fields)
+
+
+def _parse_dba_layout(path: Path, dbm_size: int) -> ReversedLayout:
+    data = path.read_bytes()
+    fixed_layout = _parse_fixed_dos_dba_layout(data, dbm_size)
+    if fixed_layout is not None:
+        return fixed_layout
+
+    descriptors: list[bytes] = []
+
+    for index in range(1024):
+        position = DBA_DESCRIPTOR_START + index * DBA_DESCRIPTOR_SIZE
+        descriptor = data[position : position + DBA_DESCRIPTOR_SIZE]
+        if len(descriptor) != DBA_DESCRIPTOR_SIZE:
+            break
+
+        type_code = descriptor[2]
+        display_length = descriptor[3]
+        storage_length = descriptor[7]
+        offset = descriptor[9] + (descriptor[10] << 8)
+        if (
+            type_code not in TYPE_NAMES
+            or display_length == 0
+            or display_length > 100
+            or storage_length > 100
+            or offset > 10000
+        ):
+            break
+
+        descriptors.append(descriptor)
+
+    if not descriptors:
+        raise ValueError("Fant ingen feltbeskrivelser i DBA-filen.")
+
+    names_start = DBA_DESCRIPTOR_START + len(descriptors) * DBA_DESCRIPTOR_SIZE
+    names = _read_dba_names(data, len(descriptors), names_start)
+    if len(names) < len(descriptors):
+        descriptors = descriptors[: len(names)]
+
+    raw_fields: list[ReversedField] = []
+    max_stored_end = 0
+    for name, descriptor in zip(names, descriptors):
+        storage_length = descriptor[7]
+        offset = descriptor[9] + (descriptor[10] << 8)
+        raw_fields.append(
+            ReversedField(
+                name=name,
+                type_name=TYPE_NAMES.get(descriptor[2], f"Unknown(0x{descriptor[2]:02X})"),
+                storage_length=storage_length,
+                decimals=descriptor[4],
+                offset=offset,
+            )
+        )
+        if storage_length:
+            max_stored_end = max(max_stored_end, offset + storage_length)
+
+    if not max_stored_end:
+        raise ValueError("DBA-filen beskriver ingen lagrede DBM-felt.")
+
+    record_size = max_stored_end
+    for candidate in range(max_stored_end, max_stored_end + 4096):
+        if dbm_size % candidate == 0:
+            record_size = candidate
+            break
+
+    fields = [
+        field
+        for field in raw_fields
+        if field.storage_length and field.offset + field.storage_length <= record_size
+    ]
+    if not fields:
+        raise ValueError("Fant ingen felt i DBA-filen som peker inn i DBM-recorden.")
+
+    return ReversedLayout(record_size=record_size, fields=fields)
+
+
+def _read_layout_records(dbm_path: Path, schema_path: Path) -> list[dict]:
+    if schema_path.suffix.casefold() == ".dba":
+        layout = _parse_dba_layout(schema_path, dbm_path.stat().st_size)
+    else:
+        layout = _parse_reversed_tdf(schema_path)
+    data = dbm_path.read_bytes()
+    records: list[dict] = []
+
+    for position in range(0, len(data), layout.record_size):
+        record = data[position : position + layout.record_size]
+        if len(record) != layout.record_size:
+            continue
+
+        row = {}
+        for field in layout.fields:
+            raw = record[field.offset : field.offset + field.storage_length]
+            row[field.name] = _decode_reversed_field(field, raw)
+        records.append(row)
+
+    return records
+
+
+def _read_fixed_dos_records(dbm_path: Path, dba_path: Path) -> list[dict]:
+    if not dbm_path.exists():
+        raise ValueError(f"KUNDOAAB.DBM finnes ikke i app-mappen: {dbm_path}")
+    if not dba_path.exists():
+        raise ValueError(f"KUNDOAAB.DBA finnes ikke i app-mappen: {dba_path}")
+
+    layout = _parse_fixed_dos_dba_layout(dba_path.read_bytes(), dbm_path.stat().st_size)
+    if layout is None:
+        raise ValueError("KUNDOAAB.DBA/DBM matcher ikke den validerte statiske DOS-layouten.")
+
+    data = dbm_path.read_bytes()
+    records: list[dict] = []
+    for position in range(0, len(data), layout.record_size):
+        record = data[position : position + layout.record_size]
+        if len(record) != layout.record_size:
+            continue
+
+        row = {}
+        for field in layout.fields:
+            raw = record[field.offset : field.offset + field.storage_length]
+            row[field.name] = _decode_reversed_field(field, raw)
+        records.append(row)
+    return records
+
+
+def read_dataease_records(path: Path, tdf_path: Path | None = None) -> list[dict]:
     data = path.read_bytes()
     if len(data) < 128:
+        if tdf_path:
+            return _read_layout_records(path, tdf_path)
         raise ValueError("DBM-filen er for kort til å inneholde en gyldig header.")
     if data[:4] != b"DEFW":
-        raise ValueError("DBM-filen har ikke forventet DataEase-signatur DEFW.")
+        if tdf_path:
+            return _read_layout_records(path, tdf_path)
+        raise ValueError(
+            "DBM-filen har ikke DataEase-signatur DEFW. Last opp tilhørende DBA, "
+            "eller velg en mappe som inneholder DBA med samme filnavn."
+        )
 
     field_count = struct.unpack_from("<H", data, 6)[0]
     record_count = struct.unpack_from("<I", data, 8)[0]
@@ -204,305 +447,42 @@ def read_dataease_records(path: Path = DATA_FILE) -> list[dict]:
     return records
 
 
-def _decode_aab_text(raw: bytes) -> str:
-    raw = raw.split(b"\x00", 1)[0].rstrip(b"\x00 ")
-    return " ".join(raw.decode(AAB_ENCODING, errors="replace").split())
+def _save_uploaded_file(file_item, suffix: str) -> Path:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+        temp_path = Path(temp_file.name)
+        file_item.file.seek(0)
+        shutil.copyfileobj(file_item.file, temp_file)
+    return temp_path
 
 
-def _raw_aab_text(raw: bytes) -> str:
-    return raw.split(b"\x00", 1)[0].decode(AAB_ENCODING, errors="replace").strip()
-
-
-def _format_aab_decimal(value: float) -> str:
-    if value == int(value):
-        return str(int(value))
-    return f"{value:.2f}".rstrip("0").rstrip(".")
-
-
-def _decode_aab_number(field: AabField, raw: bytes):
-    text = _raw_aab_text(raw)
-    compact = text.replace(" ", "")
-    if compact and all(ch.isalnum() or ch in {".", ",", "-", "+"} for ch in compact):
-        return text
-
-    if field.storage_length == 4:
-        if field.decimals:
-            value = struct.unpack("<f", raw[:4])[0]
-            return "" if abs(value) > 1e20 else _format_aab_decimal(value)
-        return str(struct.unpack("<i", raw[:4])[0])
-
-    if field.storage_length == 2:
-        return str(struct.unpack("<h", raw[:2])[0])
-
-    if field.storage_length == 8:
-        value = struct.unpack("<q", raw[:8])[0]
-        if field.decimals:
-            value = value / (10 ** field.decimals)
-        return _format_aab_decimal(float(value))
-
-    return _decode_aab_text(raw)
-
-
-def _parse_aab_layout(path: Path = AAB_CUSTOMER_TDF) -> list[AabField]:
-    fields: list[AabField] = []
-    pattern = re.compile(
-        r"^\s*\d+\s+(?P<name>.{25})\s+"
-        r"(?P<type>.{16})\s+"
-        r"\d+\s+(?P<storage>\d+)\s+(?P<decimals>\d+)\s+"
-        r"(?P<offset>\d+)\s+(?P<stored>yes|no)\b"
-    )
-
-    for line in path.read_text(encoding="utf-8").splitlines():
-        match = pattern.match(line)
-        if not match or match.group("stored") != "yes":
-            continue
-        fields.append(
-            AabField(
-                name=match.group("name").strip(),
-                type_name=match.group("type").strip(),
-                storage_length=int(match.group("storage")),
-                decimals=int(match.group("decimals")),
-                offset=int(match.group("offset")),
-            )
-        )
-
-    if not fields:
-        raise ValueError("Fant ingen lagrede felt i KUNDOAAB_REVERSED.TDF.")
-    return fields
-
-
-def _decode_aab_field(field: AabField, raw: bytes):
-    if field.type_name == "Choice/Lookup":
-        return raw[0] if raw else ""
-
-    if field.type_name in {"Number", "Number/Decimal"}:
-        return _decode_aab_number(field, raw)
-
-    value = _decode_aab_text(raw)
-    if value:
-        return value
-
-    if any(raw):
-        return raw.hex()
-    return ""
-
-
-def read_aab_customer_records() -> list[dict]:
-    fields = _parse_aab_layout()
-    data = AAB_CUSTOMER_FILE.read_bytes()
-    records: list[dict] = []
-
-    for position in range(0, len(data), AAB_RECORD_SIZE):
-        record = data[position : position + AAB_RECORD_SIZE]
-        if len(record) != AAB_RECORD_SIZE:
-            continue
-
-        row = {}
-        for field in fields:
-            raw = record[field.offset : field.offset + field.storage_length]
-            row[field.name] = _decode_aab_field(field, raw)
-        records.append(row)
-
-    return records
-
-
-def _aab_customer_payload(row: dict) -> dict:
-    postal = " ".join(
-        part
-        for part in [str(row.get("Postnr", "")), str(row.get("Poststed", ""))]
-        if part
-    )
-    return {
-        "customerNumber": row.get("Kundenr", ""),
-        "name": row.get("Navn", ""),
-        "phone": row.get("Telefon", ""),
-        "fax": row.get("Telefax", ""),
-        "address": row.get("Adresse", ""),
-        "postal": postal,
-        "contact": row.get("Kontaktperson", ""),
-        "email": row.get("Mail_adresse", ""),
-        "organizationNumber": row.get("Foretaknr", ""),
-        "sellerNumber": row.get("Selgernr", ""),
-        "detailSections": _aab_detail_sections(row),
-    }
-
-
-def _aab_group_for_field(name: str) -> str:
-    for title, fields in AAB_DETAIL_GROUPS:
-        if name in fields:
-            return title
-
-    if name.startswith(("Salg", "Selg")):
-        return "Salg"
-
-    return "Øvrige felt"
-
-
-def _aab_detail_sections(row: dict) -> list[dict]:
-    grouped: dict[str, list[dict]] = {title: [] for title, _ in AAB_DETAIL_GROUPS}
-    grouped["Øvrige felt"] = []
-
-    for name, value in row.items():
-        group = _aab_group_for_field(name)
-        grouped.setdefault(group, []).append({"label": name, "value": value})
-
-    sections = []
-    for title in [group_title for group_title, _ in AAB_DETAIL_GROUPS] + ["Øvrige felt"]:
-        fields = grouped.get(title, [])
-        if fields:
-            sections.append({"title": title, "fields": fields})
-    return sections
-
-
-def search_aab_customers(query: str) -> list[dict]:
-    needle = _normalize(query)
-    if not needle:
-        return []
-
-    matches = []
-    for row in read_aab_customer_records():
-        searchable = _normalize(
-            " ".join(
-                str(row.get(field, ""))
-                for field in [
-                    "Kundenr",
-                    "Navn",
-                    "Telefon",
-                    "Adresse",
-                    "Postnr",
-                    "Poststed",
-                    "Kontaktperson",
-                    "Mail_adresse",
-                    "Foretaknr",
-                ]
-            )
-        )
-
-        if needle in searchable or all(part in searchable for part in needle.split()):
-            matches.append(_aab_customer_payload(row))
-
-    return matches
-
-
-def search_people(query: str) -> list[dict]:
-    needle = _normalize(query)
-    if not needle:
-        return []
-
-    matches = []
-    for row in read_dataease_records():
-        first_name = str(row.get("FIRST_NAME", ""))
-        last_name = str(row.get("LAST_NAME", ""))
-        full_name = f"{first_name} {last_name}"
-        searchable = _normalize(full_name)
-
-        if needle in searchable or all(part in searchable for part in needle.split()):
-            matches.append(
-                {
-                    "name": full_name,
-                    "address": ", ".join(
-                        part
-                        for part in [str(row.get("ADDRESS", "")), str(row.get("CITY", ""))]
-                        if part
-                    ),
-                    "email": row.get("EMAIL", ""),
-                    "phone": row.get("PHONE", ""),
-                }
-            )
-
-    return matches
-
-
-def list_people() -> list[dict]:
-    people = []
-    for row in read_dataease_records():
-        first_name = str(row.get("FIRST_NAME", ""))
-        last_name = str(row.get("LAST_NAME", ""))
-        people.append(
-            {
-                "id": row.get("CUSTOMER_ID", ""),
-                "name": f"{first_name} {last_name}".strip(),
-                "address": row.get("ADDRESS", ""),
-                "city": row.get("CITY", ""),
-                "phone": row.get("PHONE", ""),
-                "email": row.get("EMAIL", ""),
-                "createdDate": row.get("CREATED_DATE", ""),
-            }
-        )
-    return people
-
-
-def _format_price(value) -> str:
-    try:
-        return f"{float(value):,.2f}".replace(",", " ")
-    except (TypeError, ValueError):
-        return str(value or "")
-
-
-def _product_payload(row: dict) -> dict:
-    return {
-        "id": row.get("PRODUKT_ID", ""),
-        "name": row.get("NAVN", ""),
-        "itemNumber": row.get("VARENUMMER", ""),
-        "unitPrice": row.get("ENHETSPRIS", ""),
-        "unitPriceDisplay": _format_price(row.get("ENHETSPRIS", "")),
-        "costPrice": row.get("KOSTPRIS", ""),
-        "costPriceDisplay": _format_price(row.get("KOSTPRIS", "")),
-        "vatType": row.get("MVA_TYPE", ""),
-        "incomeAccount": row.get("INNTEKTSKONTO", ""),
-    }
-
-
-def search_products(query: str) -> list[dict]:
-    needle = _normalize(query)
-    if not needle:
-        return []
-
-    matches = []
-    for row in read_dataease_records(PRODUCT_FILE):
-        searchable = _normalize(
-            " ".join(
-                str(row.get(field, ""))
-                for field in ["NAVN", "VARENUMMER", "MVA_TYPE", "INNTEKTSKONTO"]
-            )
-        )
-
-        if needle in searchable or all(part in searchable for part in needle.split()):
-            matches.append(_product_payload(row))
-
-    return matches
-
-
-def list_products() -> list[dict]:
-    return [_product_payload(row) for row in read_dataease_records(PRODUCT_FILE)]
-
-
-def read_uploaded_database(file_item) -> tuple[str, list[dict]]:
+def read_uploaded_database(file_item, schema_file_item=None) -> tuple[str, list[dict]]:
     filename = Path(file_item.filename or "").name
     if not filename:
         raise ValueError("Velg en databasefil først.")
 
     suffix = Path(filename).suffix or ".dbm"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-        temp_path = Path(temp_file.name)
-        file_item.file.seek(0)
-        shutil.copyfileobj(file_item.file, temp_file)
+    temp_path = _save_uploaded_file(file_item, suffix)
+    temp_schema_path = None
+    if schema_file_item is not None and getattr(schema_file_item, "filename", ""):
+        schema_suffix = Path(schema_file_item.filename).suffix or ".dba"
+        temp_schema_path = _save_uploaded_file(schema_file_item, schema_suffix)
 
     try:
-        records = read_dataease_records(temp_path)
+        records = read_dataease_records(temp_path, temp_schema_path)
     finally:
         temp_path.unlink(missing_ok=True)
+        if temp_schema_path is not None:
+            temp_schema_path.unlink(missing_ok=True)
 
     return filename, records
 
 
-def search_uploaded_database(file_item, query: str) -> dict:
+def _search_records_payload(source: str, records: list[dict], query: str) -> dict:
     needle = _normalize(query)
     if not needle:
         raise ValueError("Skriv inn et søkeord først.")
 
-    filename, records = read_uploaded_database(file_item)
-    field_names = list(records[0].keys()) if records else []
+    field_names = list(records[0].keys())[:MAX_DISPLAY_FIELDS] if records else []
     matches = []
     total_matches = 0
 
@@ -516,13 +496,13 @@ def search_uploaded_database(file_item, query: str) -> dict:
                         "title": _generic_record_title(row, total_matches),
                         "fields": [
                             {"label": name, "value": value}
-                            for name, value in row.items()
+                            for name, value in list(row.items())[:MAX_DISPLAY_FIELDS]
                         ],
                     }
                 )
 
     return {
-        "source": filename,
+        "source": source,
         "fields": field_names,
         "records": len(records),
         "matches": matches,
@@ -531,16 +511,43 @@ def search_uploaded_database(file_item, query: str) -> dict:
     }
 
 
-def list_uploaded_database(file_item) -> dict:
-    filename, records = read_uploaded_database(file_item)
-    field_names = list(records[0].keys()) if records else []
+def _list_records_payload(source: str, records: list[dict]) -> dict:
+    field_names = list(records[0].keys())[:MAX_DISPLAY_FIELDS] if records else []
+    display_records = [
+        {field: row.get(field, "") for field in field_names}
+        for row in records
+    ]
 
     return {
-        "source": filename,
+        "source": source,
         "fields": field_names,
-        "records": records,
+        "records": display_records,
         "recordCount": len(records),
+        "totalFields": len(records[0]) if records else 0,
+        "limitedFields": bool(records and len(records[0]) > MAX_DISPLAY_FIELDS),
     }
+
+
+def search_uploaded_database(file_item, query: str, schema_file_item=None) -> dict:
+    filename, records = read_uploaded_database(file_item, schema_file_item)
+    return _search_records_payload(filename, records, query)
+
+
+def list_uploaded_database(file_item, schema_file_item=None) -> dict:
+    filename, records = read_uploaded_database(file_item, schema_file_item)
+    return _list_records_payload(filename, records)
+
+
+def read_static_kundoaab_records() -> list[dict]:
+    return _read_fixed_dos_records(KUNDOAAB_DBM_FILE, KUNDOAAB_DBA_FILE)
+
+
+def search_static_kundoaab(query: str) -> dict:
+    return _search_records_payload("KUNDOAAB statisk", read_static_kundoaab_records(), query)
+
+
+def list_static_kundoaab() -> dict:
+    return _list_records_payload("KUNDOAAB statisk", read_static_kundoaab_records())
 
 
 def _generic_record_title(row: dict, index: int) -> str:
@@ -728,7 +735,7 @@ HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DataEase personsøk</title>
+  <title>DataEase filtolker</title>
   <style>
     :root {
       color-scheme: light;
@@ -847,7 +854,8 @@ HTML = """<!doctype html>
       gap: 10px;
       margin-bottom: 22px;
     }
-    input {
+    input,
+    select {
       width: 100%;
       min-height: 52px;
       border: 1px solid var(--line);
@@ -858,9 +866,17 @@ HTML = """<!doctype html>
       font: inherit;
       outline: none;
     }
-    input:focus {
+    input:focus,
+    select:focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(17, 106, 91, 0.14);
+    }
+    .hidden-file-input {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
     }
     .search button,
     .convert-form button {
@@ -882,6 +898,9 @@ HTML = """<!doctype html>
       max-width: 680px;
       margin-bottom: 22px;
     }
+    #generic-file-search-form {
+      max-width: 920px;
+    }
     .field {
       display: grid;
       gap: 7px;
@@ -890,6 +909,34 @@ HTML = """<!doctype html>
       color: var(--muted);
       font-size: 0.9rem;
       font-weight: 800;
+    }
+    .database-picker {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .database-option {
+      display: grid;
+      gap: 10px;
+      align-content: start;
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #fff;
+    }
+    .database-option h2 {
+      margin: 0;
+      color: var(--text);
+      font-size: 1rem;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+    .field-note {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.86rem;
+      line-height: 1.35;
     }
     .file-tabs {
       display: inline-grid;
@@ -1110,6 +1157,7 @@ HTML = """<!doctype html>
       }
       .search { grid-template-columns: 1fr; }
       .search button { width: 100%; }
+      .database-picker { grid-template-columns: 1fr; }
       dl { grid-template-columns: 1fr; gap: 3px 0; }
       .customer-heading { display: block; }
       .detail-grid { grid-template-columns: 1fr; }
@@ -1125,61 +1173,44 @@ HTML = """<!doctype html>
         <a class="help-badge" href="/howitwork" title="Vis howitwork.md" aria-label="Vis howitwork.md">?</a>
       </div>
       <nav class="menu" aria-label="Hovedmeny">
-        <button class="menu-button" type="button" data-view="generic-file-search-view">Generisk fil tolker</button>
+        <button class="menu-button active" type="button" data-view="generic-file-search-view">Generisk fil tolker</button>
         <button class="menu-button" type="button" data-view="csv-convert-view">Konvertering av CSV</button>
       </nav>
     </aside>
     <main>
-      
-      <section class="view active" id="search-view">
-        <h1>Personsøk</h1>
-        <p class="lede">Skriv inn fornavn og etternavn for å hente kontaktinformasjon fra DataEase-filen.</p>
-        <form class="search" id="search-form">
-          <input id="name" name="name" autocomplete="name" placeholder="F.eks. Alice Hansen" autofocus>
-          <button type="submit">Søk</button>
-        </form>
-        <div class="status" id="status"></div>
-        <section class="results" id="results" aria-live="polite"></section>
-      </section>
-      <section class="view" id="aab-customer-search-view">
-        <h1>Kundesøk AAB</h1>
-        <p class="lede">Søk i KUNDOAAB etter kundenummer, navn, telefon, adresse, kontaktperson, e-post eller foretaksnummer.</p>
-        <form class="search" id="aab-customer-search-form">
-          <input id="aab-customer-query" name="aab-customer-query" placeholder="F.eks. ABELSON eller 0003">
-          <button type="submit">Søk</button>
-        </form>
-        <div class="status" id="aab-customer-status"></div>
-        <section class="results" id="aab-customer-results" aria-live="polite"></section>
-      </section>
-      <section class="view" id="list-view">
-        <h1>Liste</h1>
-        <p class="lede">Alle records i tabellen.</p>
-        <div class="status" id="list-status"></div>
-        <section id="list-results" aria-live="polite"></section>
-      </section>
-      <section class="view" id="product-search-view">
-        <h1>Produktsøk</h1>
-        <p class="lede">Søk etter produktnavn, varenummer, MVA-type eller inntektskonto.</p>
-        <form class="search" id="product-search-form">
-          <input id="product-query" name="product-query" placeholder="F.eks. Arbeidstid eller 3020">
-          <button type="submit">Søk</button>
-        </form>
-        <div class="status" id="product-status"></div>
-        <section class="results" id="product-results" aria-live="polite"></section>
-      </section>
-      <section class="view" id="product-list-view">
-        <h1>Produktliste</h1>
-        <p class="lede">Alle produkter i produkttabellen.</p>
-        <div class="status" id="product-list-status"></div>
-        <section id="product-list-results" aria-live="polite"></section>
-      </section>
-      <section class="view" id="generic-file-search-view">
+      <section class="view active" id="generic-file-search-view">
         <h1>Generisk fil tolker</h1>
-        <p class="lede">Last opp en DataEase DBM-fil fra PC-en og bruk fanene til å søke eller liste alle postene.</p>
+        <p class="lede">Velg én DataEase DBM-fil direkte, eller velg en mappe og plukk en DBM-fil fra listen.</p>
         <form class="convert-form" id="generic-file-search-form">
-          <div class="field">
-            <label for="generic-db-file">Databasefil</label>
-            <input id="generic-db-file" name="generic-db-file" type="file" accept=".dbm,.DBM,application/octet-stream">
+          <div class="database-picker">
+            <section class="database-option" aria-labelledby="single-db-title">
+              <h2 id="single-db-title">Valg 1: enkeltfil</h2>
+              <div class="field">
+                <label for="generic-db-file">Velg Databasefil - flervalg for hente både dbm og dba filen</label>
+                <input id="generic-db-file" name="generic-db-file" type="file" accept=".dbm,.DBM,.dba,.DBA,.tdf,.TDF,application/octet-stream,text/plain" multiple>
+              </div>
+              <div class="field">
+                <label for="generic-tdf-file" id="generic-tdf-label">Definisjonsfil fallback</label>
+                <input id="generic-tdf-file" name="generic-tdf-file" type="file" accept=".dba,.DBA,.tdf,.TDF,application/octet-stream,text/plain">
+                <span class="field-note" id="generic-tdf-status"></span>
+              </div>
+              <p class="field-note">Velg DBM og DBA samtidig i samme filvalg, saa matches DBA automatisk. Fallback-feltet brukes bare hvis definisjonsfilen velges separat.</p>
+            </section>
+            <section class="database-option" aria-labelledby="folder-db-title">
+              <h2 id="folder-db-title">Valg 2: mappe</h2>
+              <div class="field">
+                <label for="generic-db-folder-button">Mappe med DBM-filer</label>
+                <button id="generic-db-folder-button" type="button" title="Velg mappe. Bare DBM-filer vises i listen.">Velg mappe</button>
+                <input id="generic-db-folder" class="hidden-file-input" name="generic-db-folder" type="file" webkitdirectory directory multiple tabindex="-1" aria-hidden="true" title="Velg mappe. Bare DBM-filer vises i listen.">
+              </div>
+              <div class="field">
+                <label for="generic-db-folder-list">Database fra mappe</label>
+                <select id="generic-db-folder-list" name="generic-db-folder-list" disabled>
+                  <option value="">Velg en mappe først</option>
+                </select>
+              </div>
+              <p class="field-note">Bare .DBM-filer fra valgt mappe vises alfabetisk. Matchende .DBA/.TDF sendes med automatisk.</p>
+            </section>
           </div>
           <div class="file-tabs" role="tablist" aria-label="Generisk fil tolker">
             <button class="file-tab active" type="button" data-generic-tab="generic-search-panel">Søk</button>
@@ -1199,6 +1230,29 @@ HTML = """<!doctype html>
         <div class="status" id="generic-file-status"></div>
         <section class="results" id="generic-file-results" aria-live="polite"></section>
         <section id="generic-list-results" aria-live="polite"></section>
+      </section>
+      <section class="view" id="kundoaab-static-view">
+        <h1>KUNDOAAB statisk</h1>
+        <p class="lede">Leser KUNDOAAB.DBM og KUNDOAAB.DBA direkte fra app-mappen med den validerte statiske DOS-layouten.</p>
+        <form class="convert-form" id="kundoaab-static-form">
+          <div class="file-tabs" role="tablist" aria-label="KUNDOAAB statisk">
+            <button class="file-tab active" type="button" data-kundoaab-tab="kundoaab-search-panel">Søk</button>
+            <button class="file-tab" type="button" data-kundoaab-tab="kundoaab-list-panel">Liste</button>
+          </div>
+          <div class="file-tab-panel active" id="kundoaab-search-panel">
+            <div class="field">
+              <label for="kundoaab-query">Søkeord</label>
+              <input id="kundoaab-query" name="kundoaab-query" placeholder="F.eks. navn, kundenummer, telefon eller adresse">
+            </div>
+            <button type="submit">Søk statisk</button>
+          </div>
+          <div class="file-tab-panel" id="kundoaab-list-panel">
+            <button id="kundoaab-load-list" type="button">Last statisk liste</button>
+          </div>
+        </form>
+        <div class="status" id="kundoaab-status"></div>
+        <section class="results" id="kundoaab-results" aria-live="polite"></section>
+        <section id="kundoaab-list-results" aria-live="polite"></section>
       </section>
       <section class="view" id="csv-convert-view">
         <h1>Konvertering av CSV</h1>
@@ -1226,40 +1280,39 @@ HTML = """<!doctype html>
   <script>
     const menuButtons = document.querySelectorAll(".menu-button");
     const views = document.querySelectorAll(".view");
-    const form = document.querySelector("#search-form");
-    const input = document.querySelector("#name");
-    const status = document.querySelector("#status");
-    const results = document.querySelector("#results");
-    const aabCustomerForm = document.querySelector("#aab-customer-search-form");
-    const aabCustomerInput = document.querySelector("#aab-customer-query");
-    const aabCustomerStatus = document.querySelector("#aab-customer-status");
-    const aabCustomerResults = document.querySelector("#aab-customer-results");
-    const listStatus = document.querySelector("#list-status");
-    const listResults = document.querySelector("#list-results");
-    const productForm = document.querySelector("#product-search-form");
-    const productInput = document.querySelector("#product-query");
-    const productStatus = document.querySelector("#product-status");
-    const productResults = document.querySelector("#product-results");
-    const productListStatus = document.querySelector("#product-list-status");
-    const productListResults = document.querySelector("#product-list-results");
     const genericFileForm = document.querySelector("#generic-file-search-form");
     const genericDbFileInput = document.querySelector("#generic-db-file");
+    const genericTdfLabel = document.querySelector("#generic-tdf-label");
+    const genericTdfFileInput = document.querySelector("#generic-tdf-file");
+    const genericTdfStatus = document.querySelector("#generic-tdf-status");
+    const genericDbFolderButton = document.querySelector("#generic-db-folder-button");
+    const genericDbFolderInput = document.querySelector("#generic-db-folder");
+    const genericDbFolderList = document.querySelector("#generic-db-folder-list");
     const genericDbQueryInput = document.querySelector("#generic-db-query");
     const genericFileStatus = document.querySelector("#generic-file-status");
     const genericFileResults = document.querySelector("#generic-file-results");
-    const genericFileTabs = document.querySelectorAll(".file-tab");
+    const genericFileTabs = document.querySelectorAll("[data-generic-tab]");
     const genericFilePanels = document.querySelectorAll(".file-tab-panel");
     const genericLoadListButton = document.querySelector("#generic-load-list");
     const genericListResults = document.querySelector("#generic-list-results");
+    const kundoaabForm = document.querySelector("#kundoaab-static-form");
+    const kundoaabQueryInput = document.querySelector("#kundoaab-query");
+    const kundoaabStatus = document.querySelector("#kundoaab-status");
+    const kundoaabResults = document.querySelector("#kundoaab-results");
+    const kundoaabTabs = document.querySelectorAll("[data-kundoaab-tab]");
+    const kundoaabPanels = document.querySelectorAll("#kundoaab-search-panel, #kundoaab-list-panel");
+    const kundoaabLoadListButton = document.querySelector("#kundoaab-load-list");
+    const kundoaabListResults = document.querySelector("#kundoaab-list-results");
     const csvConvertForm = document.querySelector("#csv-convert-form");
     const csvFileInput = document.querySelector("#csv-file");
     const csvTableInput = document.querySelector("#csv-table");
     const csvOutputInput = document.querySelector("#csv-output");
     const csvConvertStatus = document.querySelector("#csv-convert-status");
     const csvConvertResults = document.querySelector("#csv-convert-results");
-    let listLoaded = false;
-    let productListLoaded = false;
     let genericListPayload = null;
+    let genericFolderDbmFiles = [];
+    let genericFolderFiles = [];
+    let genericDatabaseMode = "single";
 
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -1269,172 +1322,6 @@ HTML = """<!doctype html>
         '"': "&quot;",
         "'": "&#039;"
       }[char]));
-    }
-
-    function renderPeople(people) {
-      if (!people.length) {
-        results.innerHTML = '<div class="empty">Ingen treff.</div>';
-        return;
-      }
-
-      results.innerHTML = people.map((person) => `
-        <article class="person">
-          <h2>${escapeHtml(person.name)}</h2>
-          <dl>
-            <dt>Adresse</dt><dd>${escapeHtml(person.address)}</dd>
-            <dt>E-post</dt><dd><a href="mailto:${escapeHtml(person.email)}">${escapeHtml(person.email)}</a></dd>
-            <dt>Telefon</dt><dd><a href="tel:${escapeHtml(person.phone)}">${escapeHtml(person.phone)}</a></dd>
-          </dl>
-        </article>
-      `).join("");
-    }
-
-    function renderList(people) {
-      if (!people.length) {
-        listResults.innerHTML = '<div class="empty">Ingen records funnet.</div>';
-        return;
-      }
-
-      listResults.innerHTML = `
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Navn</th>
-                <th>Adresse</th>
-                <th>By</th>
-                <th>Telefon</th>
-                <th>E-post</th>
-                <th>Opprettet</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${people.map((person) => `
-                <tr>
-                  <td>${escapeHtml(person.id)}</td>
-                  <td>${escapeHtml(person.name)}</td>
-                  <td>${escapeHtml(person.address)}</td>
-                  <td>${escapeHtml(person.city)}</td>
-                  <td><a href="tel:${escapeHtml(person.phone)}">${escapeHtml(person.phone)}</a></td>
-                  <td><a href="mailto:${escapeHtml(person.email)}">${escapeHtml(person.email)}</a></td>
-                  <td>${escapeHtml(person.createdDate)}</td>
-                </tr>
-              `).join("")}
-            </tbody>
-          </table>
-        </div>
-      `;
-    }
-
-    function renderAabDetailSections(sections) {
-      if (!sections?.length) return "";
-
-      return `
-        <details class="detail-toggle">
-          <summary>Se mer</summary>
-          <div class="detail-sections">
-            ${sections.map((section) => `
-              <section class="detail-section">
-                <h3>${escapeHtml(section.title)}</h3>
-                <div class="detail-grid">
-                  ${section.fields.map((field) => `
-                    <div class="detail-item">
-                      <span class="detail-label">${escapeHtml(field.label)}</span>
-                      <span class="detail-value">${escapeHtml(field.value ?? "-")}</span>
-                    </div>
-                  `).join("")}
-                </div>
-              </section>
-            `).join("")}
-          </div>
-        </details>
-      `;
-    }
-
-    function renderAabCustomers(customers) {
-      if (!customers.length) {
-        aabCustomerResults.innerHTML = '<div class="empty">Ingen kunder funnet.</div>';
-        return;
-      }
-
-      aabCustomerResults.innerHTML = customers.map((customer) => `
-        <article class="person">
-          <div class="customer-heading">
-            <h2>${escapeHtml(customer.name || customer.customerNumber)}</h2>
-          </div>
-          <dl>
-            <dt>Kundenr</dt><dd>${escapeHtml(customer.customerNumber)}</dd>
-            <dt>Adresse</dt><dd>${escapeHtml(customer.address)}</dd>
-            <dt>Poststed</dt><dd>${escapeHtml(customer.postal)}</dd>
-            <dt>Kontakt</dt><dd>${escapeHtml(customer.contact)}</dd>
-            <dt>E-post</dt><dd>${customer.email ? `<a href="mailto:${escapeHtml(customer.email)}">${escapeHtml(customer.email)}</a>` : ""}</dd>
-            <dt>Telefon</dt><dd>${customer.phone ? `<a href="tel:${escapeHtml(customer.phone)}">${escapeHtml(customer.phone)}</a>` : ""}</dd>
-            <dt>Telefax</dt><dd>${escapeHtml(customer.fax)}</dd>
-            <dt>Foretaknr</dt><dd>${escapeHtml(customer.organizationNumber)}</dd>
-            <dt>Selgernr</dt><dd>${escapeHtml(customer.sellerNumber)}</dd>
-          </dl>
-          ${renderAabDetailSections(customer.detailSections)}
-        </article>
-      `).join("");
-    }
-
-    function renderProducts(products, target) {
-      if (!products.length) {
-        target.innerHTML = '<div class="empty">Ingen produkter funnet.</div>';
-        return;
-      }
-
-      target.innerHTML = products.map((product) => `
-        <article class="person">
-          <h2>${escapeHtml(product.name)}</h2>
-          <dl>
-            <dt>Varenummer</dt><dd>${escapeHtml(product.itemNumber || "-")}</dd>
-            <dt>Enhetspris</dt><dd>${escapeHtml(product.unitPriceDisplay)}</dd>
-            <dt>Kostpris</dt><dd>${escapeHtml(product.costPriceDisplay)}</dd>
-            <dt>MVA</dt><dd>${escapeHtml(product.vatType)}</dd>
-            <dt>Konto</dt><dd>${escapeHtml(product.incomeAccount)}</dd>
-          </dl>
-        </article>
-      `).join("");
-    }
-
-    function renderProductList(products) {
-      if (!products.length) {
-        productListResults.innerHTML = '<div class="empty">Ingen produkter funnet.</div>';
-        return;
-      }
-
-      productListResults.innerHTML = `
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Produkt</th>
-                <th>Varenummer</th>
-                <th>Enhetspris</th>
-                <th>Kostpris</th>
-                <th>MVA</th>
-                <th>Konto</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${products.map((product) => `
-                <tr>
-                  <td>${escapeHtml(product.id)}</td>
-                  <td>${escapeHtml(product.name)}</td>
-                  <td>${escapeHtml(product.itemNumber)}</td>
-                  <td>${escapeHtml(product.unitPriceDisplay)}</td>
-                  <td>${escapeHtml(product.costPriceDisplay)}</td>
-                  <td>${escapeHtml(product.vatType)}</td>
-                  <td>${escapeHtml(product.incomeAccount)}</td>
-                </tr>
-              `).join("")}
-            </tbody>
-          </table>
-        </div>
-      `;
     }
 
     function renderConversion(payload) {
@@ -1467,13 +1354,13 @@ HTML = """<!doctype html>
       `;
     }
 
-    function renderGenericResults(payload) {
+    function renderRecordResults(payload, target) {
       if (!payload.matches.length) {
-        genericFileResults.innerHTML = '<div class="empty">Ingen treff i den opplastede filen.</div>';
+        target.innerHTML = '<div class="empty">Ingen treff funnet.</div>';
         return;
       }
 
-      genericFileResults.innerHTML = payload.matches.map((record) => `
+      target.innerHTML = payload.matches.map((record) => `
         <article class="person">
           <h2>${escapeHtml(record.title)}</h2>
           <div class="detail-grid">
@@ -1488,18 +1375,22 @@ HTML = """<!doctype html>
       `).join("");
     }
 
-    function renderGenericList(payload) {
+    function renderGenericResults(payload) {
+      renderRecordResults(payload, genericFileResults);
+    }
+
+    function renderRecordList(payload, target, clearTarget) {
       genericListPayload = payload;
-      genericFileResults.innerHTML = "";
+      clearTarget.innerHTML = "";
 
       if (!payload.records.length) {
-        genericListResults.innerHTML = '<div class="empty">Ingen records funnet i den opplastede filen.</div>';
+        target.innerHTML = '<div class="empty">Ingen records funnet.</div>';
         return;
       }
 
-      genericListResults.innerHTML = `
+      target.innerHTML = `
         <div class="table-actions">
-          <button class="download-button" id="generic-download-csv" type="button">Lagre som CSV</button>
+          <button class="download-button download-csv" type="button">Lagre som CSV</button>
         </div>
         <div class="table-wrap">
           <table>
@@ -1519,7 +1410,15 @@ HTML = """<!doctype html>
         </div>
       `;
 
-      document.querySelector("#generic-download-csv").addEventListener("click", downloadGenericCsv);
+      target.querySelector(".download-csv").addEventListener("click", downloadGenericCsv);
+    }
+
+    function renderGenericList(payload) {
+      renderRecordList(payload, genericListResults, genericFileResults);
+    }
+
+    function renderKundoaabList(payload) {
+      renderRecordList(payload, kundoaabListResults, kundoaabResults);
     }
 
     function csvCell(value) {
@@ -1548,22 +1447,183 @@ HTML = """<!doctype html>
       link.remove();
     }
 
+    function clearGenericOutput() {
+      genericListPayload = null;
+      genericFileResults.innerHTML = "";
+      genericListResults.innerHTML = "";
+    }
+
+    function selectedFolderDbmFile() {
+      if (genericDbFolderList.value === "") return null;
+      const selectedIndex = Number(genericDbFolderList.value);
+      if (!Number.isInteger(selectedIndex)) return null;
+      return genericFolderDbmFiles[selectedIndex] || null;
+    }
+
+    function selectedGenericDbFile() {
+      if (genericDatabaseMode === "folder") return selectedFolderDbmFile();
+      return Array.from(genericDbFileInput.files || [])
+        .find((file) => file.name.toLowerCase().endsWith(".dbm"))
+        || genericDbFileInput.files[0]
+        || null;
+    }
+
+    function fileStem(file) {
+      return (file?.name || "").replace(/\\.[^.]+$/, "").toLowerCase();
+    }
+
+    function folderPathDir(file) {
+      const path = file?.webkitRelativePath || "";
+      const slash = path.lastIndexOf("/");
+      return slash >= 0 ? path.slice(0, slash).toLowerCase() : "";
+    }
+
+    function selectedFolderName() {
+      const firstPath = genericFolderFiles[0]?.webkitRelativePath || "";
+      return firstPath.split("/")[0] || "";
+    }
+
+    function selectedFolderSchemaFile() {
+      const dbFile = selectedFolderDbmFile();
+      if (!dbFile) return null;
+      const stem = fileStem(dbFile);
+      const dir = folderPathDir(dbFile);
+      const sameTable = (file) => fileStem(file) === stem && folderPathDir(file) === dir;
+      return genericFolderFiles.find((file) => file.name.toLowerCase().endsWith(".dba") && sameTable(file))
+        || genericFolderFiles.find((file) => file.name.toLowerCase().endsWith(".tdf") && sameTable(file))
+        || null;
+    }
+
+    function selectedGenericSchemaFile() {
+      if (genericDatabaseMode === "folder") return selectedFolderSchemaFile();
+      const dbFile = selectedGenericDbFile();
+      const sameTable = (file) => fileStem(file) === fileStem(dbFile);
+      const selectedFiles = Array.from(genericDbFileInput.files || []);
+      const pairedSchema = selectedFiles.find((file) => file.name.toLowerCase().endsWith(".dba") && sameTable(file))
+        || selectedFiles.find((file) => file.name.toLowerCase().endsWith(".tdf") && sameTable(file));
+      if (pairedSchema) return pairedSchema;
+      return genericTdfFileInput.files[0] || null;
+    }
+
+    function selectedSchemaFromDbPicker() {
+      if (genericDatabaseMode === "folder") return null;
+      const dbFile = selectedGenericDbFile();
+      if (!dbFile || !dbFile.name.toLowerCase().endsWith(".dbm")) return null;
+      const selectedFiles = Array.from(genericDbFileInput.files || []);
+      const sameTable = (file) => fileStem(file) === fileStem(dbFile);
+      return selectedFiles.find((file) => file.name.toLowerCase().endsWith(".dba") && sameTable(file))
+        || selectedFiles.find((file) => file.name.toLowerCase().endsWith(".tdf") && sameTable(file))
+        || null;
+    }
+
+    function refreshGenericTdfFallbackState() {
+      const bundledSchema = selectedSchemaFromDbPicker();
+      const fallbackSchema = genericTdfFileInput.files[0] || null;
+      const selectedDbPickerFiles = Array.from(genericDbFileInput.files || []);
+      if (bundledSchema) {
+        genericTdfLabel.textContent = "Definisjonsfil fallback - fil valgt med dbm";
+        genericTdfStatus.textContent = bundledSchema.name;
+        return;
+      }
+      if (genericDatabaseMode !== "folder" && selectedDbPickerFiles.length) {
+        genericTdfLabel.textContent = "Definisjonsfil fallback - mangler DBM";
+        genericTdfStatus.textContent = "";
+        return;
+      }
+      genericTdfLabel.textContent = "Definisjonsfil fallback";
+      genericTdfStatus.textContent = fallbackSchema ? `Separat valgt: ${fallbackSchema.name}` : "";
+    }
+
+    function selectedGenericDbSourceLabel() {
+      return genericDatabaseMode === "folder" ? "fra mappelisten" : "som enkeltfil";
+    }
+
+    function selectedGenericSchemaLabel() {
+      const schemaFile = selectedGenericSchemaFile();
+      if (!schemaFile) return "";
+      return ` med definisjonsfil ${schemaFile.webkitRelativePath || schemaFile.name}`;
+    }
+
+    function folderDbmSummary() {
+      if (!genericFolderDbmFiles.length) return "Ingen .DBM-filer funnet";
+      const names = genericFolderDbmFiles.map((file) => file.webkitRelativePath || file.name);
+      const visibleNames = names.slice(0, 8).join(", ");
+      const hiddenCount = names.length - 8;
+      return hiddenCount > 0
+        ? `${genericFolderDbmFiles.length} DBM-filer: ${visibleNames} og ${hiddenCount} til`
+        : `${genericFolderDbmFiles.length} DBM-filer: ${visibleNames}`;
+    }
+
+    function refreshFolderDbmList() {
+      genericFolderFiles = Array.from(genericDbFolderInput.files || []);
+      genericFolderDbmFiles = genericFolderFiles
+        .filter((file) => file.name.toLowerCase().endsWith(".dbm"))
+        .sort((left, right) => {
+          const byName = left.name.localeCompare(right.name, "nb", { sensitivity: "base" });
+          if (byName !== 0) return byName;
+          return (left.webkitRelativePath || left.name).localeCompare(
+            right.webkitRelativePath || right.name,
+            "nb",
+            { sensitivity: "base" }
+          );
+        });
+
+      genericDbFolderList.innerHTML = "";
+
+      if (!genericFolderDbmFiles.length) {
+        genericDbFolderList.disabled = true;
+        genericDbFolderList.innerHTML = '<option value="">Ingen .DBM-filer funnet</option>';
+        genericDbFolderButton.textContent = selectedFolderName() || "Velg mappe";
+        genericDbFolderInput.title = "Ingen .DBM-filer funnet i valgt mappe.";
+        genericDbFolderList.title = "Ingen .DBM-filer funnet i valgt mappe.";
+        genericFileStatus.textContent = "Ingen .DBM-filer ble funnet i valgt mappe.";
+        return;
+      }
+
+      genericDbFolderList.disabled = false;
+      genericFolderDbmFiles.forEach((file, index) => {
+        const option = document.createElement("option");
+        option.value = String(index);
+        const schemaFile = genericFolderFiles.find((candidate) =>
+          candidate.name.toLowerCase().endsWith(".dba") &&
+          fileStem(candidate) === fileStem(file) &&
+          folderPathDir(candidate) === folderPathDir(file)
+        ) || genericFolderFiles.find((candidate) =>
+          candidate.name.toLowerCase().endsWith(".tdf") &&
+          fileStem(candidate) === fileStem(file) &&
+          folderPathDir(candidate) === folderPathDir(file)
+        );
+        const schemaMarker = schemaFile ? ` + ${schemaFile.name.split(".").pop().toUpperCase()}` : "";
+        option.textContent = `${file.webkitRelativePath || file.name}${schemaMarker}`;
+        option.title = option.textContent;
+        genericDbFolderList.appendChild(option);
+      });
+      genericDatabaseMode = "folder";
+      const summary = folderDbmSummary();
+      genericDbFolderButton.textContent = selectedFolderName() || "Valgt mappe";
+      genericDbFolderInput.title = summary;
+      genericDbFolderList.title = summary;
+      genericFileStatus.textContent = `${genericFolderDbmFiles.length} DBM-filer funnet i valgt mappe. Velg database i listen.`;
+    }
+
     async function loadGenericList() {
-      const dbFile = genericDbFileInput.files[0];
+      const dbFile = selectedGenericDbFile();
 
       if (!dbFile) {
-        genericFileStatus.textContent = "Velg en databasefil først.";
+        genericFileStatus.textContent = "Velg en databasefil først, enten som enkeltfil eller fra mappelisten.";
         genericListResults.innerHTML = "";
         return;
       }
 
-      genericFileStatus.textContent = "Tolker fil og laster liste...";
+      genericFileStatus.textContent = `Tolker ${dbFile.name} ${selectedGenericDbSourceLabel()}${selectedGenericSchemaLabel()} og laster liste...`;
       genericFileResults.innerHTML = "";
       genericListResults.innerHTML = "";
 
       try {
         const formData = new FormData();
         formData.append("databaseFile", dbFile);
+        const schemaFile = selectedGenericSchemaFile();
+        if (schemaFile) formData.append("schemaFile", schemaFile);
 
         const response = await fetch("/api/generic-file/list", {
           method: "POST",
@@ -1571,7 +1631,8 @@ HTML = """<!doctype html>
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || "Kunne ikke laste listen.");
-        genericFileStatus.textContent = `${payload.recordCount} records i ${payload.source}. ${payload.fields.length} felter.`;
+        const fieldLimitText = payload.limitedFields ? ` Viser de første ${payload.fields.length} av ${payload.totalFields} felter.` : "";
+        genericFileStatus.textContent = `${payload.recordCount} records i ${payload.source}. ${payload.fields.length} felter.${fieldLimitText}`;
         renderGenericList(payload);
       } catch (error) {
         genericFileStatus.textContent = error.message;
@@ -1579,39 +1640,21 @@ HTML = """<!doctype html>
       }
     }
 
-    async function loadList() {
-      if (listLoaded) return;
-      listStatus.textContent = "Laster records...";
-      listResults.innerHTML = "";
+    async function loadKundoaabList() {
+      kundoaabStatus.textContent = "Laster statisk KUNDOAAB-liste...";
+      kundoaabResults.innerHTML = "";
+      kundoaabListResults.innerHTML = "";
 
       try {
-        const response = await fetch("/api/records");
+        const response = await fetch("/api/kundoaab/list");
         const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "Kunne ikke laste records.");
-        listStatus.textContent = `${payload.length} records`;
-        renderList(payload);
-        listLoaded = true;
+        if (!response.ok) throw new Error(payload.error || "Kunne ikke laste statisk KUNDOAAB-liste.");
+        const fieldLimitText = payload.limitedFields ? ` Viser de første ${payload.fields.length} av ${payload.totalFields} felter.` : "";
+        kundoaabStatus.textContent = `${payload.recordCount} records i ${payload.source}. ${payload.fields.length} felter.${fieldLimitText}`;
+        renderKundoaabList(payload);
       } catch (error) {
-        listStatus.textContent = error.message;
-        listResults.innerHTML = "";
-      }
-    }
-
-    async function loadProductList() {
-      if (productListLoaded) return;
-      productListStatus.textContent = "Laster produkter...";
-      productListResults.innerHTML = "";
-
-      try {
-        const response = await fetch("/api/products");
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "Kunne ikke laste produkter.");
-        productListStatus.textContent = `${payload.length} produkter`;
-        renderProductList(payload);
-        productListLoaded = true;
-      } catch (error) {
-        productListStatus.textContent = error.message;
-        productListResults.innerHTML = "";
+        kundoaabStatus.textContent = error.message;
+        kundoaabListResults.innerHTML = "";
       }
     }
 
@@ -1620,12 +1663,8 @@ HTML = """<!doctype html>
         const viewId = button.dataset.view;
         menuButtons.forEach((item) => item.classList.toggle("active", item === button));
         views.forEach((view) => view.classList.toggle("active", view.id === viewId));
-        if (viewId === "list-view") loadList();
-        if (viewId === "search-view") input.focus();
-        if (viewId === "aab-customer-search-view") aabCustomerInput.focus();
-        if (viewId === "product-list-view") loadProductList();
-        if (viewId === "product-search-view") productInput.focus();
         if (viewId === "generic-file-search-view") genericDbFileInput.focus();
+        if (viewId === "kundoaab-static-view") kundoaabQueryInput.focus();
         if (viewId === "csv-convert-view") csvFileInput.focus();
       });
     });
@@ -1642,94 +1681,67 @@ HTML = """<!doctype html>
       });
     });
 
+    kundoaabTabs.forEach((button) => {
+      button.addEventListener("click", () => {
+        const panelId = button.dataset.kundoaabTab;
+        kundoaabTabs.forEach((item) => item.classList.toggle("active", item === button));
+        kundoaabPanels.forEach((panel) => panel.classList.toggle("active", panel.id === panelId));
+        kundoaabResults.innerHTML = "";
+        kundoaabListResults.innerHTML = "";
+        if (panelId === "kundoaab-search-panel") kundoaabQueryInput.focus();
+        if (panelId === "kundoaab-list-panel") loadKundoaabList();
+      });
+    });
+
     genericDbFileInput.addEventListener("change", () => {
-      genericListPayload = null;
-      genericFileStatus.textContent = "";
-      genericFileResults.innerHTML = "";
-      genericListResults.innerHTML = "";
+      genericDatabaseMode = "single";
+      refreshGenericTdfFallbackState();
+      const dbFile = selectedGenericDbFile();
+      genericFileStatus.textContent = dbFile
+        ? `Valgt enkeltfil: ${dbFile.name}${selectedGenericSchemaLabel()}`
+        : "";
+      clearGenericOutput();
+    });
+
+    genericTdfFileInput.addEventListener("change", () => {
+      genericDatabaseMode = "single";
+      refreshGenericTdfFallbackState();
+      const dbFile = genericDbFileInput.files[0];
+      const schemaFile = genericTdfFileInput.files[0];
+      genericFileStatus.textContent = schemaFile
+        ? `Valgt definisjonsfil: ${schemaFile.name}${dbFile ? ` for ${dbFile.name}` : ""}`
+        : "";
+      clearGenericOutput();
+    });
+
+    genericDbFolderButton.addEventListener("click", () => genericDbFolderInput.click());
+
+    genericDbFolderInput.addEventListener("change", () => {
+      clearGenericOutput();
+      refreshFolderDbmList();
+      refreshGenericTdfFallbackState();
+    });
+
+    genericDbFolderList.addEventListener("change", () => {
+      genericDatabaseMode = "folder";
+      refreshGenericTdfFallbackState();
+      const dbFile = selectedFolderDbmFile();
+      genericFileStatus.textContent = dbFile
+        ? `Valgt fra mappe: ${dbFile.webkitRelativePath || dbFile.name}${selectedGenericSchemaLabel()}`
+        : "";
+      clearGenericOutput();
     });
 
     genericLoadListButton.addEventListener("click", loadGenericList);
-
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const name = input.value.trim();
-      if (!name) {
-        status.textContent = "Skriv inn et navn først.";
-        results.innerHTML = "";
-        return;
-      }
-
-      status.textContent = "Søker...";
-      results.innerHTML = "";
-
-      try {
-        const response = await fetch(`/api/search?name=${encodeURIComponent(name)}`);
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "Søket feilet.");
-        status.textContent = `${payload.length} treff for "${name}"`;
-        renderPeople(payload);
-      } catch (error) {
-        status.textContent = error.message;
-        results.innerHTML = "";
-      }
-    });
-
-    aabCustomerForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const query = aabCustomerInput.value.trim();
-      if (!query) {
-        aabCustomerStatus.textContent = "Skriv inn kundenummer, navn eller kontaktinfo først.";
-        aabCustomerResults.innerHTML = "";
-        return;
-      }
-
-      aabCustomerStatus.textContent = "Søker...";
-      aabCustomerResults.innerHTML = "";
-
-      try {
-        const response = await fetch(`/api/aab-customers/search?query=${encodeURIComponent(query)}`);
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "Kundesøket feilet.");
-        aabCustomerStatus.textContent = `${payload.length} treff for "${query}"`;
-        renderAabCustomers(payload);
-      } catch (error) {
-        aabCustomerStatus.textContent = error.message;
-        aabCustomerResults.innerHTML = "";
-      }
-    });
-
-    productForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const query = productInput.value.trim();
-      if (!query) {
-        productStatus.textContent = "Skriv inn et produkt, varenummer eller konto først.";
-        productResults.innerHTML = "";
-        return;
-      }
-
-      productStatus.textContent = "Søker...";
-      productResults.innerHTML = "";
-
-      try {
-        const response = await fetch(`/api/products/search?query=${encodeURIComponent(query)}`);
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "Produktsøket feilet.");
-        productStatus.textContent = `${payload.length} treff for "${query}"`;
-        renderProducts(payload, productResults);
-      } catch (error) {
-        productStatus.textContent = error.message;
-        productResults.innerHTML = "";
-      }
-    });
+    kundoaabLoadListButton.addEventListener("click", loadKundoaabList);
 
     genericFileForm.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const dbFile = genericDbFileInput.files[0];
+      const dbFile = selectedGenericDbFile();
       const query = genericDbQueryInput.value.trim();
 
       if (!dbFile) {
-        genericFileStatus.textContent = "Velg en databasefil først.";
+        genericFileStatus.textContent = "Velg en databasefil først, enten som enkeltfil eller fra mappelisten.";
         genericFileResults.innerHTML = "";
         return;
       }
@@ -1740,13 +1752,15 @@ HTML = """<!doctype html>
         return;
       }
 
-      genericFileStatus.textContent = "Tolker fil og søker...";
+      genericFileStatus.textContent = `Tolker ${dbFile.name} ${selectedGenericDbSourceLabel()}${selectedGenericSchemaLabel()} og søker...`;
       genericFileResults.innerHTML = "";
       genericListResults.innerHTML = "";
 
       try {
         const formData = new FormData();
         formData.append("databaseFile", dbFile);
+        const schemaFile = selectedGenericSchemaFile();
+        if (schemaFile) formData.append("schemaFile", schemaFile);
         formData.append("query", query);
 
         const response = await fetch("/api/generic-file/search", {
@@ -1761,6 +1775,33 @@ HTML = """<!doctype html>
       } catch (error) {
         genericFileStatus.textContent = error.message;
         genericFileResults.innerHTML = "";
+      }
+    });
+
+    kundoaabForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const query = kundoaabQueryInput.value.trim();
+
+      if (!query) {
+        kundoaabStatus.textContent = "Skriv inn et søkeord først.";
+        kundoaabResults.innerHTML = "";
+        return;
+      }
+
+      kundoaabStatus.textContent = "Søker statisk KUNDOAAB...";
+      kundoaabResults.innerHTML = "";
+      kundoaabListResults.innerHTML = "";
+
+      try {
+        const response = await fetch(`/api/kundoaab/search?query=${encodeURIComponent(query)}`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Statisk KUNDOAAB-søk feilet.");
+        const limitText = payload.limited ? " Viser de første 100." : "";
+        kundoaabStatus.textContent = `${payload.totalMatches} treff for "${query}" i ${payload.source}. ${payload.records} records, ${payload.fields.length} felter.${limitText}`;
+        renderRecordResults(payload, kundoaabResults);
+      } catch (error) {
+        kundoaabStatus.textContent = error.message;
+        kundoaabResults.innerHTML = "";
       }
     });
 
@@ -1815,42 +1856,19 @@ class Handler(BaseHTTPRequestHandler):
             howitwork_response(self)
             return
 
-        if parsed.path == "/api/search":
-            query = parse_qs(parsed.query).get("name", [""])[0]
-            try:
-                json_response(self, 200, search_people(query))
-            except Exception as exc:
-                json_response(self, 500, {"error": str(exc)})
-            return
-
-        if parsed.path == "/api/records":
-            try:
-                json_response(self, 200, list_people())
-            except Exception as exc:
-                json_response(self, 500, {"error": str(exc)})
-            return
-
-        if parsed.path == "/api/aab-customers/search":
+        if parsed.path == "/api/kundoaab/search":
             query = parse_qs(parsed.query).get("query", [""])[0]
             try:
-                json_response(self, 200, search_aab_customers(query))
+                json_response(self, 200, search_static_kundoaab(query))
             except Exception as exc:
-                json_response(self, 500, {"error": str(exc)})
+                json_response(self, 400, {"error": str(exc)})
             return
 
-        if parsed.path == "/api/products/search":
-            query = parse_qs(parsed.query).get("query", [""])[0]
+        if parsed.path == "/api/kundoaab/list":
             try:
-                json_response(self, 200, search_products(query))
+                json_response(self, 200, list_static_kundoaab())
             except Exception as exc:
-                json_response(self, 500, {"error": str(exc)})
-            return
-
-        if parsed.path == "/api/products":
-            try:
-                json_response(self, 200, list_products())
-            except Exception as exc:
-                json_response(self, 500, {"error": str(exc)})
+                json_response(self, 400, {"error": str(exc)})
             return
 
         json_response(self, 404, {"error": "Ikke funnet"})
@@ -1911,8 +1929,9 @@ class Handler(BaseHTTPRequestHandler):
                 file_item = form["databaseFile"] if "databaseFile" in form else None
                 if file_item is None or not getattr(file_item, "file", None):
                     raise ValueError("Velg en databasefil først.")
+                schema_item = form["schemaFile"] if "schemaFile" in form else None
 
-                result = search_uploaded_database(file_item, form.getfirst("query", ""))
+                result = search_uploaded_database(file_item, form.getfirst("query", ""), schema_item)
                 json_response(self, 200, result)
             except Exception as exc:
                 json_response(self, 400, {"error": str(exc)})
@@ -1937,8 +1956,9 @@ class Handler(BaseHTTPRequestHandler):
                 file_item = form["databaseFile"] if "databaseFile" in form else None
                 if file_item is None or not getattr(file_item, "file", None):
                     raise ValueError("Velg en databasefil først.")
+                schema_item = form["schemaFile"] if "schemaFile" in form else None
 
-                result = list_uploaded_database(file_item)
+                result = list_uploaded_database(file_item, schema_item)
                 json_response(self, 200, result)
             except Exception as exc:
                 json_response(self, 400, {"error": str(exc)})
