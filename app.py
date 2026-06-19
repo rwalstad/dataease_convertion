@@ -477,6 +477,86 @@ def list_products() -> list[dict]:
     return [_product_payload(row) for row in read_dataease_records(PRODUCT_FILE)]
 
 
+def read_uploaded_database(file_item) -> tuple[str, list[dict]]:
+    filename = Path(file_item.filename or "").name
+    if not filename:
+        raise ValueError("Velg en databasefil først.")
+
+    suffix = Path(filename).suffix or ".dbm"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+        temp_path = Path(temp_file.name)
+        file_item.file.seek(0)
+        shutil.copyfileobj(file_item.file, temp_file)
+
+    try:
+        records = read_dataease_records(temp_path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+    return filename, records
+
+
+def search_uploaded_database(file_item, query: str) -> dict:
+    needle = _normalize(query)
+    if not needle:
+        raise ValueError("Skriv inn et søkeord først.")
+
+    filename, records = read_uploaded_database(file_item)
+    field_names = list(records[0].keys()) if records else []
+    matches = []
+    total_matches = 0
+
+    for row in records:
+        searchable = _normalize(" ".join(str(value) for value in row.values()))
+        if needle in searchable or all(part in searchable for part in needle.split()):
+            total_matches += 1
+            if len(matches) < 100:
+                matches.append(
+                    {
+                        "title": _generic_record_title(row, total_matches),
+                        "fields": [
+                            {"label": name, "value": value}
+                            for name, value in row.items()
+                        ],
+                    }
+                )
+
+    return {
+        "source": filename,
+        "fields": field_names,
+        "records": len(records),
+        "matches": matches,
+        "totalMatches": total_matches,
+        "limited": total_matches > len(matches),
+    }
+
+
+def list_uploaded_database(file_item) -> dict:
+    filename, records = read_uploaded_database(file_item)
+    field_names = list(records[0].keys()) if records else []
+
+    return {
+        "source": filename,
+        "fields": field_names,
+        "records": records,
+        "recordCount": len(records),
+    }
+
+
+def _generic_record_title(row: dict, index: int) -> str:
+    for preferred in ["Kundenr", "CUSTOMER_ID", "PRODUKT_ID", "ID", "Navn", "NAVN", "NAME"]:
+        value = str(row.get(preferred, "")).strip()
+        if value:
+            return value
+
+    for value in row.values():
+        text = str(value).strip()
+        if text:
+            return text[:80]
+
+    return f"Record {index}"
+
+
 def resolve_output_dir(output_dir: str) -> Path:
     requested = (output_dir or "").strip()
     if IS_VERCEL:
@@ -811,6 +891,57 @@ HTML = """<!doctype html>
       font-size: 0.9rem;
       font-weight: 800;
     }
+    .file-tabs {
+      display: inline-grid;
+      grid-template-columns: repeat(2, minmax(110px, 1fr));
+      gap: 6px;
+      max-width: 320px;
+      margin: 4px 0 10px;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .file-tab {
+      min-height: 40px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .file-tab.active {
+      background: var(--accent);
+      color: #fff;
+    }
+    .file-tab-panel {
+      display: none;
+    }
+    .file-tab-panel.active {
+      display: block;
+    }
+    .table-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin: 0 0 12px;
+    }
+    .download-button {
+      min-height: 42px;
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      padding: 0 14px;
+      background: var(--soft);
+      color: var(--accent);
+      font: inherit;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .download-button:hover {
+      background: var(--accent);
+      color: #fff;
+    }
     .view {
       display: none;
     }
@@ -999,6 +1130,7 @@ HTML = """<!doctype html>
         <button class="menu-button" type="button" data-view="list-view">Liste over personer</button>
         <button class="menu-button" type="button" data-view="product-search-view">Produkt-Søk</button>
         <button class="menu-button" type="button" data-view="product-list-view">Liste over produkter</button>
+        <button class="menu-button" type="button" data-view="generic-file-search-view">Generisk fil tolker</button>
         <button class="menu-button" type="button" data-view="csv-convert-view">Konvertering av CSV</button>
       </nav>
     </aside>
@@ -1046,6 +1178,33 @@ HTML = """<!doctype html>
         <div class="status" id="product-list-status"></div>
         <section id="product-list-results" aria-live="polite"></section>
       </section>
+      <section class="view" id="generic-file-search-view">
+        <h1>Generisk fil tolker</h1>
+        <p class="lede">Last opp en DataEase DBM-fil fra PC-en og bruk fanene til å søke eller liste alle postene.</p>
+        <form class="convert-form" id="generic-file-search-form">
+          <div class="field">
+            <label for="generic-db-file">Databasefil</label>
+            <input id="generic-db-file" name="generic-db-file" type="file" accept=".dbm,.DBM,application/octet-stream">
+          </div>
+          <div class="file-tabs" role="tablist" aria-label="Generisk fil tolker">
+            <button class="file-tab active" type="button" data-generic-tab="generic-search-panel">Søk</button>
+            <button class="file-tab" type="button" data-generic-tab="generic-list-panel">Liste</button>
+          </div>
+          <div class="file-tab-panel active" id="generic-search-panel">
+            <div class="field">
+              <label for="generic-db-query">Søkeord</label>
+              <input id="generic-db-query" name="generic-db-query" placeholder="F.eks. navn, nummer, adresse eller e-post">
+            </div>
+            <button type="submit">Søk i fil</button>
+          </div>
+          <div class="file-tab-panel" id="generic-list-panel">
+            <button id="generic-load-list" type="button">Last liste</button>
+          </div>
+        </form>
+        <div class="status" id="generic-file-status"></div>
+        <section class="results" id="generic-file-results" aria-live="polite"></section>
+        <section id="generic-list-results" aria-live="polite"></section>
+      </section>
       <section class="view" id="csv-convert-view">
         <h1>Konvertering av CSV</h1>
         <p class="lede">Lag en DataEase DBM-fil fra en CSV-fil og velg tabellnavnet som skal lagres i filen.</p>
@@ -1088,6 +1247,15 @@ HTML = """<!doctype html>
     const productResults = document.querySelector("#product-results");
     const productListStatus = document.querySelector("#product-list-status");
     const productListResults = document.querySelector("#product-list-results");
+    const genericFileForm = document.querySelector("#generic-file-search-form");
+    const genericDbFileInput = document.querySelector("#generic-db-file");
+    const genericDbQueryInput = document.querySelector("#generic-db-query");
+    const genericFileStatus = document.querySelector("#generic-file-status");
+    const genericFileResults = document.querySelector("#generic-file-results");
+    const genericFileTabs = document.querySelectorAll(".file-tab");
+    const genericFilePanels = document.querySelectorAll(".file-tab-panel");
+    const genericLoadListButton = document.querySelector("#generic-load-list");
+    const genericListResults = document.querySelector("#generic-list-results");
     const csvConvertForm = document.querySelector("#csv-convert-form");
     const csvFileInput = document.querySelector("#csv-file");
     const csvTableInput = document.querySelector("#csv-table");
@@ -1096,6 +1264,7 @@ HTML = """<!doctype html>
     const csvConvertResults = document.querySelector("#csv-convert-results");
     let listLoaded = false;
     let productListLoaded = false;
+    let genericListPayload = null;
 
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -1303,6 +1472,118 @@ HTML = """<!doctype html>
       `;
     }
 
+    function renderGenericResults(payload) {
+      if (!payload.matches.length) {
+        genericFileResults.innerHTML = '<div class="empty">Ingen treff i den opplastede filen.</div>';
+        return;
+      }
+
+      genericFileResults.innerHTML = payload.matches.map((record) => `
+        <article class="person">
+          <h2>${escapeHtml(record.title)}</h2>
+          <div class="detail-grid">
+            ${record.fields.map((field) => `
+              <div class="detail-item">
+                <span class="detail-label">${escapeHtml(field.label)}</span>
+                <span class="detail-value">${escapeHtml(field.value ?? "-")}</span>
+              </div>
+            `).join("")}
+          </div>
+        </article>
+      `).join("");
+    }
+
+    function renderGenericList(payload) {
+      genericListPayload = payload;
+      genericFileResults.innerHTML = "";
+
+      if (!payload.records.length) {
+        genericListResults.innerHTML = '<div class="empty">Ingen records funnet i den opplastede filen.</div>';
+        return;
+      }
+
+      genericListResults.innerHTML = `
+        <div class="table-actions">
+          <button class="download-button" id="generic-download-csv" type="button">Lagre som CSV</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                ${payload.fields.map((field) => `<th>${escapeHtml(field)}</th>`).join("")}
+              </tr>
+            </thead>
+            <tbody>
+              ${payload.records.map((record) => `
+                <tr>
+                  ${payload.fields.map((field) => `<td>${escapeHtml(record[field] ?? "")}</td>`).join("")}
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+
+      document.querySelector("#generic-download-csv").addEventListener("click", downloadGenericCsv);
+    }
+
+    function csvCell(value) {
+      return `"${String(value ?? "").replaceAll('"', '""')}"`;
+    }
+
+    function downloadGenericCsv() {
+      if (!genericListPayload) return;
+
+      const rows = [
+        genericListPayload.fields.map(csvCell).join(","),
+        ...genericListPayload.records.map((record) =>
+          genericListPayload.fields.map((field) => csvCell(record[field])).join(",")
+        )
+      ];
+      const csv = `\uFEFF${rows.join("\\r\\n")}`;
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const source = genericListPayload.source.replace(/\\.[^.]+$/, "") || "database";
+      const filename = `${source}-liste.csv`;
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      URL.revokeObjectURL(link.href);
+      link.remove();
+    }
+
+    async function loadGenericList() {
+      const dbFile = genericDbFileInput.files[0];
+
+      if (!dbFile) {
+        genericFileStatus.textContent = "Velg en databasefil først.";
+        genericListResults.innerHTML = "";
+        return;
+      }
+
+      genericFileStatus.textContent = "Tolker fil og laster liste...";
+      genericFileResults.innerHTML = "";
+      genericListResults.innerHTML = "";
+
+      try {
+        const formData = new FormData();
+        formData.append("databaseFile", dbFile);
+
+        const response = await fetch("/api/generic-file/list", {
+          method: "POST",
+          body: formData
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Kunne ikke laste listen.");
+        genericFileStatus.textContent = `${payload.recordCount} records i ${payload.source}. ${payload.fields.length} felter.`;
+        renderGenericList(payload);
+      } catch (error) {
+        genericFileStatus.textContent = error.message;
+        genericListResults.innerHTML = "";
+      }
+    }
+
     async function loadList() {
       if (listLoaded) return;
       listStatus.textContent = "Laster records...";
@@ -1349,9 +1630,31 @@ HTML = """<!doctype html>
         if (viewId === "aab-customer-search-view") aabCustomerInput.focus();
         if (viewId === "product-list-view") loadProductList();
         if (viewId === "product-search-view") productInput.focus();
+        if (viewId === "generic-file-search-view") genericDbFileInput.focus();
         if (viewId === "csv-convert-view") csvFileInput.focus();
       });
     });
+
+    genericFileTabs.forEach((button) => {
+      button.addEventListener("click", () => {
+        const panelId = button.dataset.genericTab;
+        genericFileTabs.forEach((item) => item.classList.toggle("active", item === button));
+        genericFilePanels.forEach((panel) => panel.classList.toggle("active", panel.id === panelId));
+        genericFileResults.innerHTML = "";
+        genericListResults.innerHTML = "";
+        if (panelId === "generic-search-panel") genericDbQueryInput.focus();
+        if (panelId === "generic-list-panel") loadGenericList();
+      });
+    });
+
+    genericDbFileInput.addEventListener("change", () => {
+      genericListPayload = null;
+      genericFileStatus.textContent = "";
+      genericFileResults.innerHTML = "";
+      genericListResults.innerHTML = "";
+    });
+
+    genericLoadListButton.addEventListener("click", loadGenericList);
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -1422,6 +1725,47 @@ HTML = """<!doctype html>
       } catch (error) {
         productStatus.textContent = error.message;
         productResults.innerHTML = "";
+      }
+    });
+
+    genericFileForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const dbFile = genericDbFileInput.files[0];
+      const query = genericDbQueryInput.value.trim();
+
+      if (!dbFile) {
+        genericFileStatus.textContent = "Velg en databasefil først.";
+        genericFileResults.innerHTML = "";
+        return;
+      }
+
+      if (!query) {
+        genericFileStatus.textContent = "Skriv inn et søkeord først.";
+        genericFileResults.innerHTML = "";
+        return;
+      }
+
+      genericFileStatus.textContent = "Tolker fil og søker...";
+      genericFileResults.innerHTML = "";
+      genericListResults.innerHTML = "";
+
+      try {
+        const formData = new FormData();
+        formData.append("databaseFile", dbFile);
+        formData.append("query", query);
+
+        const response = await fetch("/api/generic-file/search", {
+          method: "POST",
+          body: formData
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Søket i filen feilet.");
+        const limitText = payload.limited ? " Viser de første 100." : "";
+        genericFileStatus.textContent = `${payload.totalMatches} treff for "${query}" i ${payload.source}. ${payload.records} records, ${payload.fields.length} felter.${limitText}`;
+        renderGenericResults(payload);
+      } catch (error) {
+        genericFileStatus.textContent = error.message;
+        genericFileResults.innerHTML = "";
       }
     });
 
@@ -1548,6 +1892,58 @@ class Handler(BaseHTTPRequestHandler):
                         str(payload.get("tableName", "")),
                         str(payload.get("outputDir", "")),
                     )
+                json_response(self, 200, result)
+            except Exception as exc:
+                json_response(self, 400, {"error": str(exc)})
+            return
+
+        if parsed.path == "/api/generic-file/search":
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+                content_type = self.headers.get("Content-Type", "")
+                if not content_type.startswith("multipart/form-data"):
+                    raise ValueError("Send databasefilen som multipart/form-data.")
+
+                form = cgi.FieldStorage(
+                    fp=self.rfile,
+                    headers=self.headers,
+                    environ={
+                        "REQUEST_METHOD": "POST",
+                        "CONTENT_TYPE": content_type,
+                        "CONTENT_LENGTH": str(content_length),
+                    },
+                )
+                file_item = form["databaseFile"] if "databaseFile" in form else None
+                if file_item is None or not getattr(file_item, "file", None):
+                    raise ValueError("Velg en databasefil først.")
+
+                result = search_uploaded_database(file_item, form.getfirst("query", ""))
+                json_response(self, 200, result)
+            except Exception as exc:
+                json_response(self, 400, {"error": str(exc)})
+            return
+
+        if parsed.path == "/api/generic-file/list":
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+                content_type = self.headers.get("Content-Type", "")
+                if not content_type.startswith("multipart/form-data"):
+                    raise ValueError("Send databasefilen som multipart/form-data.")
+
+                form = cgi.FieldStorage(
+                    fp=self.rfile,
+                    headers=self.headers,
+                    environ={
+                        "REQUEST_METHOD": "POST",
+                        "CONTENT_TYPE": content_type,
+                        "CONTENT_LENGTH": str(content_length),
+                    },
+                )
+                file_item = form["databaseFile"] if "databaseFile" in form else None
+                if file_item is None or not getattr(file_item, "file", None):
+                    raise ValueError("Velg en databasefil først.")
+
+                result = list_uploaded_database(file_item)
                 json_response(self, 200, result)
             except Exception as exc:
                 json_response(self, 400, {"error": str(exc)})
