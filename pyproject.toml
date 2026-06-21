@@ -5,4 +5,4 @@ requires-python = ">=3.12"
 dependencies = []
 
 [tool.vercel]
-entrypoint = "app:handler"
+entrypoint = "dataeaseconvert:handler"

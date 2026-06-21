@@ -1,10 +1,10 @@
 # How It Works: lesing av DataEase-tabeller
 
-Denne filen beskriver hvordan `app.py` tolker DataEase-lignende `.DBM`-filer for aa hente ut data fra tabellene som brukes i appen.
+Denne filen beskriver hvordan `dataeaseconvert.py` tolker DataEase-lignende `.DBM`-filer for aa hente ut data fra tabellene som brukes i appen.
 
 ## Hovedfiler
 
-- `app.py` inneholder selve leseren i funksjonen `read_dataease_records()`.
+- `dataeaseconvert.py` inneholder selve leseren i funksjonen `read_dataease_records()`.
 - Den generiske filtolkeren bruker opplastede `.DBM`-filer i stedet for faste person- og produkttabeller i menyen.
 - Eldre `.DBM`-filer uten `DEFW`-header tolkes ved hjelp av en `.DBA`-definisjonsfil med samme filnavn.
 - `CUSTOMERS.TDF` og `PRODUKTER.TDF` er eksempler paa menneskelesbare beskrivelser av tabellstrukturer.
@@ -56,7 +56,7 @@ Appen kan også lese en tidligere reversert `.TDF` med `RECORD_SIZE` og feltlinj
 
 Etter de forste 128 bytes ligger feltbeskrivelsene. Hvert felt har en descriptor paa 64 bytes.
 
-For hvert felt leser `app.py`:
+For hvert felt leser `dataeaseconvert.py`:
 
 | Byte i descriptor | Lengde | Betydning |
 | --- | ---: | --- |
@@ -125,7 +125,7 @@ Eksempel:
 
 Dekodingen skjer i `_decode_field()`.
 
-| Typekode | Tolkning i `app.py` |
+| Typekode | Tolkning i `dataeaseconvert.py` |
 | ---: | --- |
 | `0x01` | Tekst. Null-padded latin-1, trimmes. |
 | `0x02` | Integer. 4-byte little-endian signed int. |
@@ -198,7 +198,7 @@ Alle API-svar returneres som JSON via `json_response()`.
 7. Returner en liste med dictionaries.
 8. Returner radene som generiske dictionaries for UI/API.
 
-## Filtolkerens oppbygning
+## Filtolkerens oppbygning og virkemåte - kode-ekstrakt
 
 Koden under er selve filtolkeren trukket ut fra appen. Den inneholder ikke web-UI,
 opplasting, API-endepunkter eller CSV-konvertering. Kunden kan bruke denne delen som
